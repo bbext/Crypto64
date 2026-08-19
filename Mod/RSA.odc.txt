@@ -1,0 +1,358 @@
+MODULE CryptoRSA;	(** AUTHOR "G.F."; PURPOSE "RSA"; *)
+
+(* Excerpt of Crypt.Mod  jm 23.8.95.*)
+
+	IMPORT B := CryptoAosBigNumbers, U := CryptoUtils, MD5 := CryptoMD5, Ciphers := CryptoCiphers, Base64 := CryptoBase64, Streams := CryptoAosStreams, Clock := CryptoAosClock, AO := CryptoAosCompat;
+
+	CONST
+		chinese = TRUE;
+		PrivateKeyMagic = 3F6FF9EBH;
+
+	TYPE
+		Number = B.BigNumber;
+		Buffer = ARRAY 16 OF SHORTCHAR;
+		Certificate* = POINTER TO EXTENSIBLE RECORD
+			authority : ARRAY 128 OF SHORTCHAR;
+			signature : Number;
+			next : Certificate
+		END;
+		Key* = POINTER TO EXTENSIBLE RECORD
+			name* : ARRAY 128 OF SHORTCHAR;
+			private* : BOOLEAN;
+			size* : AO.SIZE;
+			exponent*, modulus* : Number;
+			p, q, u : Number;
+			time*, date* : AO.SIGNED32;
+			certificates : Certificate;
+			next* : Key
+		END;
+
+
+	VAR
+		one, two: Number;
+
+	PROCEDURE ChineseRemainder (msg, d, p, q, u : Number): Number;
+		VAR
+			temp1, temp2, p2, q2: Number;
+
+
+	BEGIN
+		ASSERT(B.Cmp(p, q) < 0, 100);
+		temp1 := B.Sub(p, one);
+		temp2 := B.Mod(d, temp1);
+		temp1 := B.Mod(msg, p);
+		p2 := B.ModExp(temp1, temp2, p);
+		temp1 := B.Sub(q, one);
+		temp2 := B.Mod(d, temp1);
+		temp1 := B.Mod(msg, q);
+		q2 := B.ModExp(temp1, temp2, q);
+		IF B.Cmp(q2, p2) = 0 THEN
+			RETURN p2
+		ELSE
+			WHILE B.Cmp(q2, p2) < 0 DO
+				q2 := B.Add(q2, q)
+			END;
+			q2 := B.Sub(q2, p2);
+			temp1 := B.Mul(q2, u);
+			temp2 := B.Mod(temp1, q);
+			temp1 := B.Mul(p, temp2);
+			RETURN B.Add(temp1, p2)
+		END
+	END ChineseRemainder;
+
+	PROCEDURE (SELF: Key) Sign* (IN digest : ARRAY OF SHORTCHAR; dlen : AO.SIGNED32): Number, NEW;
+		VAR
+			msg: Number;
+
+
+	BEGIN
+		ASSERT(SELF.private);
+		B.AssignBin(msg, digest, 0, dlen);
+		IF chinese THEN
+			RETURN ChineseRemainder(msg, SELF.exponent, SELF.p, SELF.q, SELF.u)
+		ELSE
+			RETURN B.ModExp(msg, SELF.exponent, SELF.modulus)
+		END
+	END Sign;
+
+	PROCEDURE l2n (l : AO.UNSIGNED32; VAR buf : Buffer; pos : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+	BEGIN
+		i := pos + 3;
+		WHILE i >= pos DO
+			buf[i] := (*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED32(AO.UMod32(l, AO.TOUNSIGNED32(256)))));
+			l := (*WARN CONV CAST*)(AO.UDiv32(l, AO.TOUNSIGNED32(256)));
+			DEC(i)
+		END
+	END l2n;
+
+	PROCEDURE (SELF: Key) Verify* (IN digest : ARRAY OF SHORTCHAR; dlen : AO.SIZE; signature : Number): BOOLEAN, NEW;
+		VAR
+			msg: Number;
+			i, l: AO.SIZE;
+			buf: Buffer;
+
+
+	BEGIN
+		ASSERT(~SELF.private & (dlen >= 16));
+		msg := B.ModExp(signature, SELF.exponent, SELF.modulus);
+		l := msg.len;
+		FOR i := 0 TO 3 DO
+			l2n(msg.d[l - 1 - i], buf, 4 * i)
+		END;
+		FOR i := 0 TO 15 DO
+			IF buf[i] # digest[i] THEN
+				RETURN FALSE
+			END
+		END;
+		RETURN TRUE
+	END Verify;
+
+	PROCEDURE (SELF: Key) Encrypt* (msg : Number): Number, NEW;
+
+	BEGIN
+		ASSERT(~SELF.private);
+		RETURN B.ModExp(msg, SELF.exponent, SELF.modulus)
+	END Encrypt;
+
+	PROCEDURE (SELF: Key) Decrypt* (msg : Number): Number, NEW;
+
+	BEGIN
+		ASSERT(SELF.private);
+		IF chinese THEN
+			RETURN ChineseRemainder(msg, SELF.exponent, SELF.p, SELF.q, SELF.u)
+		ELSE
+			RETURN B.ModExp(msg, SELF.exponent, SELF.modulus)
+		END
+	END Decrypt;
+
+
+	PROCEDURE MakeKeys* (p, q, e : Number; IN name : ARRAY OF SHORTCHAR; VAR pub, priv : Key);
+		VAR
+			n, p1, q1, x, d: Number;
+
+
+	BEGIN
+		ASSERT(B.Cmp(p, q) # 0);
+		n := B.Mul(p, q);
+		B.Copy(p, p1);
+		p1.Dec;
+		B.Copy(q, q1);
+		q1.Dec;
+		x := B.Mul(p1, q1);
+		d := B.ModInverse(e, x);
+		NEW(pub);
+		pub.modulus := n;
+		pub.exponent := e;
+		pub.size := n.len * 32;
+		pub.private := FALSE;
+		NEW(priv);
+		priv.modulus := n;
+		priv.exponent := d;
+		priv.size := n.len * 32;
+		priv.private := TRUE;
+		IF B.Cmp(p, q) < 0 THEN
+			B.Copy(p, priv.p);
+			B.Copy(q, priv.q)
+		ELSE
+			B.Copy(q, priv.p);
+			B.Copy(p, priv.q)
+		END;
+		priv.u := B.ModInverse(priv.p, priv.q);
+		Clock.Get(pub.time, pub.date);
+		priv.time := pub.time;
+		priv.date := pub.date;
+		AO.COPY(name, pub.name);
+		AO.COPY(name, priv.name)
+	END MakeKeys;
+
+	PROCEDURE PubKey* (e, m : Number): Key;
+		VAR
+			rsa: Key;
+
+
+	BEGIN
+		NEW(rsa);
+		rsa.name := "unkown";
+		rsa.private := FALSE;
+		rsa.size := m.len * 32;
+		B.Copy(e, rsa.exponent);
+		B.Copy(m, rsa.modulus);
+		RETURN rsa
+	END PubKey;
+
+
+
+	PROCEDURE LoadPrivateKey* (r : Streams.Reader; IN passwd : ARRAY OF SHORTCHAR): Key;
+		VAR
+			s: ARRAY 128 OF SHORTCHAR;
+			c, l: Certificate;
+			k: Key;
+			cipher: Ciphers.Cipher;
+			md5: MD5.Hash;
+			digest: ARRAY 16 OF SHORTCHAR;
+			pl: AO.SIGNED32;
+			buf: ARRAY 4096 OF SHORTCHAR;
+			magic: AO.SIZE;
+			bl, n: AO.SIZE;
+			size: AO.SIGNED32;
+
+
+	BEGIN
+		NEW(k);
+		r.String(k.name);
+		r.RawBool(k.private);
+		ASSERT(k.private);
+		r.RawLInt(size);
+		k.size := size;
+		r.RawLInt(k.time);
+		r.RawLInt(k.date);
+		r.RawLInt(size);
+		bl := size;
+		r.Bytes(buf, 0, bl, n);
+		ASSERT(n = bl);
+		pl := 0;
+		WHILE passwd[pl] # 0X DO
+			INC(pl)
+		END;
+		NEW(md5);
+		md5.Initialize;
+		md5.Update(passwd, 0, pl);
+		md5.GetHash(digest, 0);
+		cipher := Ciphers.NewCipher("CryptoIDEA");
+		cipher.InitKey(digest, 128);
+		cipher.Decrypt(buf, 0, bl);
+		bl := 0;
+		U.GetLength(buf, bl, magic);
+		IF magic # PrivateKeyMagic THEN
+			RETURN NIL
+		END;
+		U.GetBigNumber(buf, bl, k.exponent);
+		U.GetBigNumber(buf, bl, k.modulus);
+		U.GetBigNumber(buf, bl, k.p);
+		U.GetBigNumber(buf, bl, k.q);
+		U.GetBigNumber(buf, bl, k.u);
+		l := NIL;
+		r.String(s);
+		WHILE s # "EOC" DO
+			NEW(c);
+			AO.COPY(s, c.authority);
+			B.FileRead(r, c.signature);
+			IF l = NIL THEN
+				k.certificates := c
+			ELSE
+				l.next := c
+			END;
+			l := c;
+			r.String(s)
+		END;
+		RETURN k
+	END LoadPrivateKey;
+
+	PROCEDURE StorePrivateKey* (w : Streams.Writer; k : Key; IN passwd : ARRAY OF SHORTCHAR);
+		VAR
+			c: Certificate;
+			cipher: Ciphers.Cipher;
+			md5: MD5.Hash;
+			digest: ARRAY 16 OF SHORTCHAR;
+			pl: AO.SIGNED32;
+			buf: ARRAY 4096 OF SHORTCHAR;
+			bl: AO.SIZE;
+
+
+	BEGIN
+		ASSERT(k.private);
+		w.Char('"');
+		w.String(k.name);
+		w.Char('"');
+		w.RawBool(k.private);
+		w.RawLInt(k.size);
+		w.RawLInt(k.time);
+		w.RawLInt(k.date);
+		pl := 0;
+		WHILE passwd[pl] # 0X DO
+			INC(pl)
+		END;
+		NEW(md5);
+		md5.Initialize;
+		md5.Update(passwd, 0, pl);
+		md5.GetHash(digest, 0);
+		cipher := Ciphers.NewCipher("CryptoIDEA");
+		cipher.InitKey(digest, 128);
+		bl := 0;
+		U.PutLength(buf, bl, PrivateKeyMagic);
+		U.PutBigNumber(buf, bl, k.exponent);
+		U.PutBigNumber(buf, bl, k.modulus);
+		U.PutBigNumber(buf, bl, k.p);
+		U.PutBigNumber(buf, bl, k.q);
+		U.PutBigNumber(buf, bl, k.u);
+		INC(bl, ((-bl)) MOD 16);
+		cipher.Encrypt(buf, 0, bl);
+		w.RawLInt(bl);
+		w.Bytes(buf, 0, bl);
+		c := k.certificates;
+		WHILE c # NIL DO
+			w.String(c.authority);
+			B.FileWrite(w, c.signature);
+			c := c.next
+		END;
+		w.String("EOC")
+	END StorePrivateKey;
+
+	PROCEDURE StorePublicKey* (w : Streams.Writer; k : Key);
+		VAR
+			buf, encoded: ARRAY 4096 OF SHORTCHAR;
+			pos: AO.SIZE;
+
+
+	BEGIN
+		ASSERT(~k.private);
+		w.String("ssh-rsa ");
+		pos := 0;
+		U.PutString(buf, pos, "ssh-rsa");
+		U.PutBigNumber(buf, pos, k.exponent);
+		U.PutBigNumber(buf, pos, k.modulus);
+		Base64.Encode(buf, pos, encoded);
+		w.String(encoded);
+		w.String(" user@Aos")
+	END StorePublicKey;
+
+	PROCEDURE ExtractPublicKey* (r : Streams.Reader): Key;
+		VAR
+			buf: ARRAY 4096 OF SHORTCHAR;
+			len: AO.SIGNED32;
+			pos: AO.SIZE;
+			str: ARRAY 64 OF SHORTCHAR;
+			k: Key;
+
+
+	BEGIN
+		NEW(k);
+		k.private := FALSE;
+		len := Base64.DecodeStream(r, buf);
+		pos := 0;
+		U.GetString(buf, pos, str);
+		ASSERT(str = "ssh-rsa");
+		U.GetBigNumber(buf, pos, k.exponent);
+		U.GetBigNumber(buf, pos, k.modulus);
+		RETURN k
+	END ExtractPublicKey;
+
+	PROCEDURE LoadPublicKey* (r : Streams.Reader): Key;
+		VAR
+			str: ARRAY 64 OF SHORTCHAR;
+
+
+	BEGIN
+		r.SkipWhitespace;
+		r.String(str);
+		ASSERT(str = "ssh-rsa");
+		RETURN ExtractPublicKey(r)
+	END LoadPublicKey;
+
+
+BEGIN
+	B.AssignInt(one, 1);
+	B.AssignInt(two, 2)
+END CryptoRSA.

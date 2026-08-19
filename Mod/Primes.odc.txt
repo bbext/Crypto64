@@ -1,0 +1,301 @@
+MODULE CryptoPrimes;
+(*	
+	2002.9.11	g.f.	based on 'bn_prime.c'
+	Copyright of the original:    <-- middle click here
+*)
+
+	IMPORT B := CryptoAosBigNumbers, Log := StdLog, AO := CryptoAosCompat;
+
+	CONST
+		N = 2048;
+
+	TYPE
+		BigNumber = B.BigNumber;
+
+	VAR
+		one: BigNumber;
+		primes: ARRAY N OF AO.SIGNED32;
+
+	PROCEDURE Checks (b : AO.SIZE): AO.SIGNED16;
+		VAR
+			t: AO.SIGNED16;
+	BEGIN
+		ASSERT(b >= 100);
+		IF b >= 1300 THEN
+			t := (*WARN CONV CAST*)SHORT(2)
+		ELSIF b >= 850 THEN
+			t := (*WARN CONV CAST*)SHORT(3)
+		ELSIF b >= 650 THEN
+			t := (*WARN CONV CAST*)SHORT(4)
+		ELSIF b >= 550 THEN
+			t := (*WARN CONV CAST*)SHORT(5)
+		ELSIF b >= 450 THEN
+			t := (*WARN CONV CAST*)SHORT(6)
+		ELSIF b >= 400 THEN
+			t := (*WARN CONV CAST*)SHORT(7)
+		ELSIF b >= 350 THEN
+			t := (*WARN CONV CAST*)SHORT(8)
+		ELSIF b >= 300 THEN
+			t := (*WARN CONV CAST*)SHORT(9)
+		ELSIF b >= 250 THEN
+			t := (*WARN CONV CAST*)SHORT(12)
+		ELSIF b >= 200 THEN
+			t := (*WARN CONV CAST*)SHORT(15)
+		ELSIF b >= 150 THEN
+			t := (*WARN CONV CAST*)SHORT(18)
+		ELSE
+			t := (*WARN CONV CAST*)SHORT(27)
+		END;
+		RETURN t
+	END Checks;
+
+
+	PROCEDURE ProbablePrime (bits : AO.SIGNED16): BigNumber;
+		VAR
+			t: BigNumber;
+			delta, i: AO.SIGNED32;
+			p: BigNumber;
+			mods: ARRAY N OF AO.UNSIGNED32;
+	BEGIN
+		LOOP
+			p := B.NewRand(bits, 1, 1);
+			FOR i := 0 TO N - 1 DO
+				mods[i] := B.ModWord(p, primes[i])
+			END;
+			i := 0;
+			delta := 0;
+			LOOP
+				INC(i);
+				IF i >= N THEN
+					B.AssignInt(t, delta);
+					p := B.Add(p, t);
+					RETURN p
+				END;
+				IF (AO.UAdd32(mods[i], delta)) MOD primes[i] <= 1 THEN
+					INC(delta, 2);
+					i := 0;
+					IF delta < 0 THEN
+						EXIT
+					END
+				END
+			END
+		END
+	END ProbablePrime;
+
+	PROCEDURE witness (W, a, a1, a1odd : BigNumber; k : AO.SIGNED16): BOOLEAN;
+		VAR
+			w: BigNumber;
+	BEGIN
+		w := B.ModExp(W, a1odd, a);
+		IF w.EQ(one) THEN
+			RETURN TRUE
+		END;
+		IF w.EQ(a1) THEN
+			RETURN TRUE
+		END;
+		WHILE k > 0 DO
+			w := B.ModMul(w, w, a);
+			IF w.EQ(one) THEN
+				RETURN FALSE
+			END;
+			IF w.EQ(a1) THEN
+				RETURN TRUE
+			END;
+			DEC(k)
+		END;
+		RETURN FALSE
+	END witness;
+
+	PROCEDURE IsPrime* (a : BigNumber; checks : AO.SIGNED16; doTrialDiv : BOOLEAN): BOOLEAN;
+		VAR
+			i, k: AO.SIGNED16;
+			A, A1, A1odd, check: BigNumber;
+	BEGIN
+		IF checks = 0 THEN
+			checks := Checks(a.BitSize())
+		END;
+		IF ~ODD(a.d[0]) THEN
+			RETURN FALSE
+		END;
+		IF doTrialDiv THEN
+			FOR i := 1 TO N - 1 DO
+				IF B.ModWord(a, primes[i]) = 0 THEN
+					RETURN FALSE
+				END
+			END
+		END;
+		B.Copy(a, A);
+		IF A.neg THEN
+			A.Negate
+		END;
+		B.Copy(A, A1);
+		A1.Dec;
+		IF A1.IsZero() THEN
+			RETURN FALSE
+		END;
+		k := (*WARN CONV CAST*)SHORT(1);
+		WHILE ~A1.BitSet(k) DO
+			INC(k)
+		END;
+		B.Copy(A1, A1odd);
+		A1odd.Shift((-k));
+		FOR i := 1 TO checks DO
+			check := B.NewRand(A1.BitSize(), 0, 0);
+			IF check.GEQ(A1) THEN
+				check := B.Sub(check, A1)
+			END;
+			check.Inc;
+			IF ~witness(check, A, A1, A1odd, k) THEN
+				RETURN FALSE
+			END
+		END;
+		RETURN TRUE
+	END IsPrime;
+
+	PROCEDURE NewPrime* (bits : AO.SIGNED16; safe : BOOLEAN): BigNumber;
+		VAR
+			checks, i: AO.SIGNED16;
+			t, p: BigNumber;
+	BEGIN
+		checks := Checks(bits);
+		i := (*WARN CONV CAST*)SHORT(1);
+		LOOP
+			p := ProbablePrime(bits);
+			Log.Char('.');
+			IF IsPrime(p, checks, FALSE) THEN
+				Log.Char('P');
+				IF ~safe THEN
+					Log.Ln;
+					RETURN p
+				ELSE
+					Log.Int(i);
+					INC(i);
+					B.Copy(p, t);
+					t.Shift((-1));
+					IF IsPrime(t, checks, FALSE) THEN
+						Log.String(" (safe prime)");
+						Log.Ln;
+						RETURN p
+					END;
+					Log.String(" (not safe)");
+					Log.Ln
+				END
+			END
+		END
+	END NewPrime;
+
+
+	PROCEDURE ProbableDHPrimeSafe (bits : AO.SIGNED16; padd, rem : BigNumber): BigNumber;
+		VAR d, q, r, qr, qadd, p: BigNumber; i: AO.SIGNED32;
+	BEGIN
+		B.Copy(padd, qadd);
+		qadd.Shift((-1));
+		q := B.NewRand(bits, 0, 1);
+		r := B.Mod(q, qadd);
+		q := B.Sub(q, r);
+		IF rem.IsZero() THEN
+			q.Inc
+		ELSE
+			B.Copy(rem, r);
+			r.Shift((-1));
+			q := B.Add(q, r)
+		END;
+		B.Copy(q, p);
+		p.Shift(1);
+		p.Inc;
+		i := 0;
+		LOOP
+			INC(i);
+			IF i >= N THEN
+				RETURN p
+			END;
+			B.AssignInt(d, primes[i]);
+			r := B.Mod(p, d);
+			qr := B.Mod(q, d);
+			IF r.IsZero() OR qr.IsZero() THEN
+				p := B.Add(p, padd);
+				q := B.Add(q, qadd);
+				i := 0
+			END
+		END
+	END ProbableDHPrimeSafe;
+
+
+	PROCEDURE ProbableDHPrime (bits : AO.SIGNED16; add, rem : BigNumber): BigNumber;
+		VAR d, r, p: BigNumber; i: AO.SIGNED32;
+	BEGIN
+		p := B.NewRand(bits, 0, 1);
+		r := B.Mod(p, add);
+		p := B.Sub(p, r);
+		IF rem.IsZero() THEN
+			p.Inc
+		ELSE
+			p := B.Add(p, rem)
+		END;
+		i := 0;
+		LOOP
+			INC(i);
+			IF i >= N THEN
+				RETURN p
+			END;
+			B.AssignInt(d, primes[i]);
+			r := B.Mod(p, d);
+			IF r.IsZero() THEN
+				p := B.Add(p, add);
+				i := 0
+			END
+		END
+	END ProbableDHPrime;
+
+	PROCEDURE NewDHPrime* (bits : AO.SIGNED16; safe : BOOLEAN; add, rem : BigNumber): BigNumber;
+		VAR checks: AO.SIGNED16; t, p: BigNumber;
+	BEGIN
+		checks := Checks(bits);
+		LOOP
+			IF safe THEN
+				p := ProbableDHPrimeSafe(bits, add, rem)
+			ELSE
+				p := ProbableDHPrime(bits, add, rem)
+			END;
+			IF IsPrime(p, checks, FALSE) THEN
+				IF ~safe THEN
+					RETURN p
+				ELSE
+					B.Copy(p, t);
+					t.Shift((-1));
+					IF IsPrime(t, checks, FALSE) THEN
+						RETURN p
+					END
+				END
+			END
+		END
+	END NewDHPrime;
+
+	PROCEDURE Init ;
+		VAR sieve: ARRAY N OF SET; i, j, p, n: AO.SIGNED32;
+	BEGIN
+		FOR i := 0 TO N - 1 DO
+			sieve[i] := {0..31}
+		END;
+		primes[0] := 2;
+		n := 1;
+		i := 1;
+		WHILE n < N DO
+			IF i MOD 32 IN sieve[i DIV 32] THEN
+				p := 2 * i + 1;
+				primes[n] := p;
+				INC(n);
+				j := i;
+				WHILE j DIV 32 < N DO
+					EXCL(sieve[j DIV 32], j MOD 32);
+					INC(j, p)
+				END
+			END;
+			INC(i)
+		END
+	END Init;
+
+BEGIN
+	Init;
+	B.AssignInt(one, 1)
+END CryptoPrimes.

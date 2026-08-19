@@ -1,0 +1,146 @@
+MODULE CryptoTCPServices;
+
+	(* Aos, Copyright 2001, Pieter Muller, ETH Zurich *)
+	(** AUTHOR "pjm"; PURPOSE "Abstract TCP services"; *)
+	
+	IMPORT KernelLog :=
+StdLog, IP := CryptoAosIP, TCP:= CryptoAosTCP, TLS:= CryptoTLS, Strings := CryptoAosStrings, AO := CryptoAosCompat (* , Configuration := AosConfiguration *);
+
+	CONST
+		Ok* = TCP.Ok;
+		Trace = TRUE;
+
+	TYPE
+		Service* = POINTER TO EXTENSIBLE RECORD
+			res : INTEGER;
+			service*, client* : TCP.Connection;
+			root, agent* : Agent;
+			new : NewAgent
+		END;
+
+
+	TYPE
+		TLSService* = POINTER TO EXTENSIBLE RECORD(Service) END;
+
+
+	TYPE
+		Agent* = POINTER TO EXTENSIBLE RECORD
+			client* : TCP.Connection;
+			next : Agent;
+			s : Service
+		END;
+		NewAgent* = PROCEDURE(c : TCP.Connection; s : Service): Agent;
+
+	PROCEDURE (SELF: Agent) Start* (c : TCP.Connection; s : Service), NEW;
+		VAR
+			str: ARRAY 32 OF SHORTCHAR;
+	BEGIN
+		SELF.client := c;
+		SELF.s := s;
+		IF Trace & (c # NIL) THEN
+			KernelLog.String("Agent ");
+			KernelLog.String(c.localAdr);
+			KernelLog.String(" connected to ");
+		END
+	END Start;
+
+
+	PROCEDURE (SELF: Service) Start* (localAdr: ARRAY OF CHAR; new : NewAgent; VAR res : INTEGER), NEW, EXTENSIBLE;
+
+	BEGIN
+		NEW(SELF.service);SELF.service.Init();
+		SELF.service.Open(localAdr, "", res);
+		IF res = Ok THEN
+			NEW(SELF.root);SELF.root.Start(NIL, NIL);
+			SELF.root.next := NIL;
+			SELF.new := new
+		ELSE
+			SELF.service := NIL
+		END;
+		IF Trace THEN
+			KernelLog.String("Service ");
+			KernelLog.String(localAdr);
+			KernelLog.String(" open ");
+			KernelLog.Int(res);
+		END
+	END Start;
+
+	PROCEDURE (SELF: Service) Remove (a : Agent), NEW;
+		VAR p: Agent;
+	BEGIN
+		p := SELF.root;
+		WHILE (p.next # NIL) & (p.next # a) DO
+			p := p.next
+		END;
+		IF p.next = a THEN
+			p.next := a.next
+		END
+	END Remove;
+
+
+	PROCEDURE (SELF: Agent) Stop , NEW;
+	BEGIN
+		SELF.client.Close()
+	END Stop;
+
+	PROCEDURE (SELF: Service) Stop* , NEW;
+		VAR p, c: Agent;
+	BEGIN
+		SELF.service.Close();
+		p := SELF.root.next;
+		WHILE p # NIL DO
+			c := p;
+			p := p.next;
+			c.Stop()
+		END
+	END Stop;
+
+	PROCEDURE (SELF: TLSService) Start* (localAdr: ARRAY OF CHAR;  new : NewAgent; VAR res : INTEGER);
+		VAR
+			certificate: ARRAY 500 OF SHORTCHAR;
+			pHex, qHex, eHex: ARRAY 1000 OF SHORTCHAR;
+			intstring: ARRAY 20 OF SHORTCHAR;
+			pLen, qLen, eLen: AO.SIGNED32;
+
+
+	BEGIN
+		(*
+		Configuration.Get("TLS.Certificate", certificate, res);
+		Configuration.Get("TLS.pHex", pHex, res);
+		Configuration.Get("TLS.qHex", qHex, res);
+		Configuration.Get("TLS.eHex", eHex, res);
+		Configuration.Get("TLS.pLen", intstring, res);
+		Strings.StrToInt32(intstring, pLen);
+		Configuration.Get("TLS.qLen", intstring, res);
+		Strings.StrToInt32(intstring, qLen);
+		Configuration.Get("TLS.eLen", intstring, res);
+		Strings.StrToInt32(intstring, eLen);
+		*)
+
+		SELF.service := TLS.GetServerConnection(certificate, pHex, qHex, eHex, pLen, qLen, eLen);
+
+		SELF.service.Open(localAdr, "", res);
+		IF res = Ok THEN
+			NEW(SELF.root); SELF.root.Start(NIL, NIL);
+			SELF.root.next := NIL;
+			SELF.new := new
+		ELSE
+			SELF.service := NIL
+		END;
+		IF Trace THEN
+
+			KernelLog.String("Service ");
+			KernelLog.String(localAdr);
+			KernelLog.String(" open ");
+			KernelLog.Int(res);
+
+		END
+	END Start;
+
+	PROCEDURE (SELF: Agent) Terminate* , NEW;
+	BEGIN
+		SELF.client.Close();
+		SELF.s.Remove(SELF)
+	END Terminate;
+
+END CryptoTCPServices.

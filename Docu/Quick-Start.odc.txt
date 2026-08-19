@@ -1,0 +1,120 @@
+Crypto Quick-Start
+
+Copyright © 2023 - 2025, by <odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAPwAAAAAAAAECAgAARGlhbG9nLk9wZW5FeHRlcm5hbCgnbWFpbHRvOmhvZHphbmFzc3JlZGluQGdtYWlsLmNvbScpAA=="/>Shelin Anton<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+
+Version: <odc-view type="StdStamps.StdView" w="1133475" h="154625" data="gvFTdGRTdGFtcHMuU3RkVmlld0Rlc2MA8VZpZXdzLlZpZXdEZXNjAPBTdG9yZXMuU3RvcmVEZXNjAAAAAAAAAAAAAAAAAKUAAAAAAAIKACv3Cig0AAAARUgLAGYBAADVHHUzLwAAAEBICwATAQAAb8CClCwAAAABRgsAiQUAAACxungrAAAAv0ULAJcEAAD@0!IBKgAAAL5FCwBfBAAAB@AS!igAAACrRQsAeQQAAJqGnzwcAAAAZ0ULAKkFAABDO21NGwAAAGRFCwD0AwAAZynhIhgAAABjRQsAggQAAHkETxUEAAAAYkULAF0DAAA="/>
+
+Cryptography for secure connections
+
+This is port of Oberon A2 cryptography libs from https://gitlab.inf.ethz.ch/felixf/oberon to BlackBox Component Builder.
+Sources converted from Active Oberon to Component Pascal using OberonParser tool https://github.com/hodzanassredin/OberonParser.
+
+Library X25519 is a port of C# library https://github.com/HirbodBehnam/X25519-CSharp.
+
+TLS implementation now supports TLS v1.2. After port it was slightly modified:
+	1. added support for modern Elliptic Curve Diffie Hellman key exchange
+	2. support for TLS extensions like SNI
+	3. bug fixes of original code
+	4. added gcm mode and aead tls
+
+
+<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAQAAAAAAAAAQgAAABTdW1tYXJ5AA=="/>Contents:<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAA="/>
+
+	1	<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAIwAAAAAAAAEbAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnSW5zJykA"/>Installation<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+	2	<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAIwAAAAAAAAEbAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnVXNlJykA"/>How to use it?<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+	3.   <odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAJQAAAAAAAAEdAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnV29ya3MnKQA="/>How it works?<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+	4	<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAKQAAAAAAAAEhAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnQ2hhbmdlTG9nJykA"/>What's new in this version?<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+	5	<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAIwAAAAAAAAEbAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnUmVmJykA"/>References<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+
+
+1	<odc-view type="StdLinks.Link" w="226500" h="183942" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAADAAAAAAAAAEEAAAASW5zAA=="/>Installation<odc-view type="StdLinks.Link" w="226500" h="183942" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>	 <odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAJwAAAAAAAAEfAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnU3VtbWFyeScpAA=="/>Up<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+
+1.1 Preconditions
+
+	For Windows you can use any BlackBox version above 1.7.
+	BlackBox 1.7.2-b1 is required for GNU/Linux, FreeBSD or OpenBSD to support [ccall16] flag.
+		<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAARAAAAAAAAAE8AAAARGlhbG9nLk9wZW5FeHRlcm5hbCgnaHR0cHM6Ly9ibGFja2JveC5vYmVyb24ub3JnL2Rvd25sb2FkJykA"/>https://blackbox.oberon.org/download<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+	
+1.2 Compile the following modules
+
+<odc-view type="DevCommanders.StdView" w="180025" h="154625" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>DevCompiler.CompileSubs Crypto <odc-view type="DevCommanders.StdEndView" w="90012" h="154625" data="gvFEZXZDb21tYW5kZXJzLlN0ZEVuZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLkVuZFZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAACAAAAAAA="/>
+
+
+2	<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAMAAAAAAAAAQUAAABVc2UA"/>How to use it?<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAA="/>	 <odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAJwAAAAAAAAEfAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnU3VtbWFyeScpAA=="/>Up<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+
+	You can use ciphers and hashes and other classes in your code. But do not use tls implementation directly now. Right way to use TLS is do it like described in CommStreams documentation for TCP protocol, but instead of  CommTCP name use CryptoTLSStream
+	
+	Also you can find examples in test modules.
+	
+		CryptoTestBigNumbers
+		CryptoTestCiphers
+		CryptoTestDH
+		CryptoTestHashes
+		CryptoTestHMAC
+		CryptoTestRSA
+		CryptoTestTLS
+		CryptoTestX25519
+	
+3	<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAOAAAAAAAAAQYAAABXb3JrcwA="/>How it works and limitations<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAA="/>	 <odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAJwAAAAAAAAEfAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnU3VtbWFyeScpAA=="/>Up<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+	
+	TLS implementation now supports only client side and do not check signiture of ServerKeyExchange. 
+
+
+4	<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAASAAAAAAAAAQoAAABDaGFuZ2VMb2cA"/>What's new in this version?<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAA="/>	 <odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAJwAAAAAAAAEfAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnU3VtbWFyeScpAA=="/>Up<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+
+	16 August 2023
+	16 August 2023
+		- Added GCM cipher mode and AEAD TLS support
+	28 July 2023
+		- Initial version
+
+5	<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAMAAAAAAAAAQUAAABSZWYA"/>License<odc-view type="StdLinks.Target" w="226500" h="183942" data="gvFTdGRMaW5rcy5UYXJnZXREZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAA="/>	 <odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAAJwAAAAAAAAEfAAAAU3RkTGlua3MuU2hvd1RhcmdldCgnU3VtbWFyeScpAA=="/>Up<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>
+
+This modules are open-source software; you can use them under the terms of the <odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAATAAAAAAAAAFEAAAARGlhbG9nLk9wZW5FeHRlcm5hbCgnaHR0cHM6Ly9vcGVuc291cmNlLm9yZy9saWNlbnNlcy9CU0QtMi1DbGF1c2UnKQA="/>BSD-2-Clause License<odc-view type="StdLinks.Link" w="188400" h="164892" data="gvFTdGRMaW5rcy5MaW5rRGVzYwDxVmlld3MuVmlld0Rlc2MA8FN0b3Jlcy5TdG9yZURlc2MAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAA"/>.
+
+The A2 System is protected by the following copyright, start and end marked by ">>" and "<<" respectively:
+
+>>
+ETH Bluebottle/Aos/A2
+Copyright (c) 2002-2016, Computer Systems Institute, ETH Zurich
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: 
+
+    * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. 
+    * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. 
+    * Neither the name of the ETH Zurich nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. 
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+<<
+
+Copyright (c) 2020, Hirbod Behnam is protected by the following copyright, start and end marked by ">>" and "<<" respectively:
+
+>>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+<<

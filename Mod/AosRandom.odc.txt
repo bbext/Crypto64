@@ -1,0 +1,192 @@
+MODULE CryptoAosRandom;
+
+(**
+
+	Aos, Copyright 2001, Pieter Muller, ETH Zurich
+	
+	AUTHOR "ecarter/bsm/pjm"; PURPOSE "Pseudo-random number generator";
+
+	Based on the ADA version by Everett F. Carter Jr., ported to Aos by Ben Smith-Mannschott.
+
+*)
+
+	IMPORT SYSTEM, Math, AO := CryptoAosCompat;
+
+	CONST
+		max = 2147483647;
+		msbit = 40000000H;
+		allbits = 7FFFFFFFH;
+		halfrange = 20000000H;
+		step = 7;
+		allbitsInv = SHORT(1 / allbits);
+
+	TYPE
+		Generator* = POINTER TO EXTENSIBLE RECORD
+			buffer : ARRAY 250 OF SET;
+			index : AO.SIGNED32;
+			Z : AO.SIGNED32
+		END;
+
+
+	TYPE
+		Sequence* = POINTER TO EXTENSIBLE RECORD
+			r : Generator
+		END;
+
+
+	PROCEDURE (SELF: Generator) Rand (): AO.SIGNED32, NEW;
+		CONST
+			a = 16807;
+			q = 127773;
+			r = 2836;
+
+		VAR
+			t: AO.SIGNED32;
+
+
+	BEGIN
+		t := a * (SELF.Z MOD q) - r * (SELF.Z DIV q);
+		IF t > 0 THEN
+			SELF.Z := t
+		ELSE
+			SELF.Z := t + max
+		END;
+		RETURN SELF.Z
+	END Rand;
+
+	PROCEDURE (SELF: Generator) InitSeed* (seed : AO.SIGNED32), NEW;
+		VAR
+			k, i: AO.SIGNED32; mask, msb: AO.SIGNED32;
+	BEGIN
+		SELF.Z := seed;
+		SELF.index := 0;
+		FOR i := 0 TO 249 DO
+			SELF.buffer[i] := BITS(SELF.Rand())
+		END;
+		FOR i := 0 TO 249 DO
+			IF SELF.Rand() > halfrange THEN
+				SELF.buffer[i] := SELF.buffer[i] + BITS(msbit)
+			END
+		END;
+		msb := msbit;
+		mask := allbits;
+		FOR i := 0 TO 30 DO
+			k := step * i + 3;
+			SELF.buffer[k] := SELF.buffer[k] * BITS(mask);
+			SELF.buffer[k] := SELF.buffer[k] + BITS(msb);
+			msb := msb DIV 2;
+			mask := mask DIV 2
+		END
+	END InitSeed;
+
+	PROCEDURE (SELF: Generator) Init* , NEW;
+	BEGIN
+		SELF.InitSeed(1)
+	END Init;
+
+	PROCEDURE (SELF: Generator) Integer* (): AO.SIGNED32, NEW;
+		VAR
+			newRand, j: AO.SIGNED32;
+
+
+	BEGIN
+		IF SELF.index >= 147 THEN
+			j := SELF.index - 147
+		ELSE
+			j := SELF.index + 103
+		END;
+		SELF.buffer[SELF.index] := SELF.buffer[SELF.index] / SELF.buffer[j];
+		newRand := SYSTEM.VAL(AO.SIGNED32, SELF.buffer[SELF.index]);
+		IF SELF.index >= 249 THEN
+			SELF.index := 0
+		ELSE
+			INC(SELF.index)
+		END;
+		RETURN newRand
+	END Integer;
+
+	PROCEDURE (SELF: Generator) Dice* (sides : AO.SIGNED32): AO.SIGNED32, NEW;
+	BEGIN
+		RETURN SELF.Integer() MOD sides
+	END Dice;
+
+	PROCEDURE (SELF: Generator) Uniform* (): AO.FLOAT32, NEW;
+
+	BEGIN
+		RETURN SELF.Integer() * allbitsInv
+	END Uniform;
+
+	PROCEDURE (SELF: Generator) Exp* (mu : AO.FLOAT32): AO.FLOAT32, NEW;
+
+	BEGIN
+		RETURN (*WARN CONV CAST*)SHORT((-Math.Ln(SELF.Uniform())) / mu)
+	END Exp;
+
+	PROCEDURE (SELF: Generator) Gaussian* (): AO.FLOAT32, NEW;
+		VAR x1, x2, w, y1: AO.FLOAT32;
+	BEGIN
+		REPEAT
+			x1 := 2.0 * SELF.Uniform() - 1;
+			x2 := 2.0 * SELF.Uniform() - 1;
+			w := x1 * x1 + x2 * x2
+		UNTIL (w > 0) & (w < 1);
+		w := (*WARN CONV CAST*)SHORT(Math.Sqrt(((-2.0) * Math.Ln(w)) / w));
+		y1 := x1 * w;
+		RETURN y1
+	END Gaussian;
+
+	PROCEDURE (SELF: Sequence) InitSeed* (seed : AO.SIGNED32), NEW;
+	BEGIN
+		SELF.r.InitSeed(seed)
+	END InitSeed;
+
+	PROCEDURE (SELF: Sequence) Init* , NEW;
+	BEGIN
+		NEW(SELF.r)
+	END Init;
+
+	PROCEDURE (SELF: Sequence) Integer* (): AO.SIGNED32, NEW;
+	BEGIN
+		RETURN SELF.r.Integer()
+	END Integer;
+
+	PROCEDURE (SELF: Sequence) Dice* (sides : AO.SIGNED32): AO.SIGNED32, NEW;
+	BEGIN
+		RETURN SELF.r.Dice(sides)
+	END Dice;
+
+	PROCEDURE (SELF: Sequence) Uniform* (): AO.FLOAT32, NEW;
+	BEGIN
+		RETURN SELF.r.Uniform()
+	END Uniform;
+
+	PROCEDURE (SELF: Sequence) Exp* (mu : AO.FLOAT32): AO.FLOAT32, NEW;
+	BEGIN
+		RETURN SELF.r.Exp(mu)
+	END Exp;
+
+	PROCEDURE (SELF: Sequence) Gaussian* (): AO.FLOAT32, NEW;
+	BEGIN
+		RETURN SELF.r.Gaussian()
+	END Gaussian;
+
+END CryptoAosRandom.
+
+(*
+	from the ADA version:
+	(c) Copyright 1997 Everett F. Carter Jr.	Permission is
+	granted by the author to use this software for any
+	application provided this copyright notice is preserved.
+
+	The algorithm was originally described by
+	Kirkpatrick, S., and E. Stoll, 1981;
+		 A Very Fast Shift-Register Sequence Random Number Generator,
+		 Journal of Computational Physics, V. 40. pp. 517-526
+
+	Performance:
+
+	Its period is 2^249. This implementation is about 25% faster than
+	RandomNumbers.Uniform().  It also offers direct generation of
+	integers which is even faster (2x on PowerPC) and especially
+	good for FPU-challenged machines like the Shark NCs.
+ *)

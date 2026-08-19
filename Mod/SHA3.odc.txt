@@ -1,0 +1,71 @@
+MODULE CryptoSHA3;
+(*
+
+	AUTHOR "GF"; PURPOSE "SHA-3";
+	
+	The Keccak sponge function, designed by Guido Bertoni, Joan Daemen,
+	Michaël Peeters and Gilles Van Assche. For more information, feedback or
+	questions, please refer to our website: http://keccak.noekeon.org/
+*)
+
+	IMPORT Hashes := CryptoHashes, Sponge := CryptoKeccakSponge, AO := CryptoAosCompat;
+
+	TYPE
+		Hash* = POINTER TO EXTENSIBLE RECORD(Hashes.Hash)
+			sponge : Sponge.Instance;
+			capacity : AO.SIGNED32
+		END;
+
+	PROCEDURE (SELF: Hash) Init* ;
+	BEGIN
+		NEW(SELF.sponge);SELF.sponge.Init();
+		SELF.capacity := 2 * 256;
+		SELF.Initialize
+	END Init;
+
+	PROCEDURE (SELF: Hash) Initialize* ;
+	BEGIN
+		IF SELF.capacity = 2 * 224 THEN
+			SELF.SetNameAndSize^("sha3-224", 224 DIV 8)
+		ELSIF SELF.capacity = 2 * 256 THEN
+			SELF.SetNameAndSize^("sha3-256", 256 DIV 8)
+		ELSIF SELF.capacity = 2 * 384 THEN
+			SELF.SetNameAndSize^("sha3-384", 384 DIV 8)
+		ELSIF SELF.capacity = 2 * 512 THEN
+			SELF.SetNameAndSize^("sha3-512", 512 DIV 8)
+		ELSE
+			HALT(100)
+		END;
+		SELF.sponge.Initialize(Sponge.Width - SELF.capacity, SELF.capacity);
+		SELF.initialized := TRUE
+	END Initialize;
+
+	PROCEDURE (SELF: Hash) SetNameAndSize* (IN name : ARRAY OF SHORTCHAR; bytesize : AO.SIGNED32);
+	BEGIN
+		SELF.capacity := 2 * 8 * bytesize;
+		SELF.Initialize;
+		IF name # "" THEN
+			SELF.SetNameAndSize^(name, bytesize)
+		END
+	END SetNameAndSize;
+
+	PROCEDURE (SELF: Hash) Update* (IN data : ARRAY OF SHORTCHAR; pos, len : AO.SIZE);
+	BEGIN
+		ASSERT(SELF.initialized);
+		SELF.sponge.Absorb(data, pos, len)
+	END Update;
+
+	PROCEDURE (SELF: Hash) GetHash* (VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+	BEGIN
+		SELF.sponge.AbsorbLastFewBits(6X);
+		SELF.sponge.Squeeze(buf, pos,SELF.size)
+	END GetHash;
+
+	PROCEDURE NewHash* (): Hashes.Hash;
+		VAR h: Hash;
+	BEGIN
+		NEW(h);h.Init();
+		RETURN h
+	END NewHash;
+
+END CryptoSHA3.

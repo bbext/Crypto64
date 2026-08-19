@@ -1,0 +1,79 @@
+MODULE CryptoHashes;(** AUTHOR "G.F."; PURPOSE "Empty Hash"; *)
+
+	IMPORT AO := CryptoAosCompat, Meta;
+
+	TYPE
+		Hash* = POINTER TO EXTENSIBLE RECORD
+			name* : ARRAY 64 OF SHORTCHAR;
+			size* : AO.SIGNED32;
+			initialized* : BOOLEAN
+		END;
+		HashFactory = PROCEDURE(): Hash;
+
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: Hash) Init* , NEW, EXTENSIBLE;
+
+	BEGIN
+		SELF.initialized := FALSE
+	END Init;
+
+	PROCEDURE (SELF: Hash) Initialize* , NEW, EXTENSIBLE;
+
+	BEGIN
+		HALT(30)
+	END Initialize;
+
+	PROCEDURE (SELF: Hash) SetNameAndSize* (IN name : ARRAY OF SHORTCHAR; size : AO.SIGNED32), NEW, EXTENSIBLE;
+
+	BEGIN
+		AO.COPY(name, SELF.name);
+		SELF.size := size
+	END SetNameAndSize;
+
+	PROCEDURE (SELF: Hash) Update* (IN data : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE), NEW, EXTENSIBLE;
+
+	BEGIN
+		HALT(30)
+	END Update;
+
+	PROCEDURE (SELF: Hash) GetHash* (VAR buffer : ARRAY OF SHORTCHAR; position : AO.SIZE), NEW, EXTENSIBLE;
+
+	BEGIN
+		HALT(30)
+	END GetHash;
+
+	PROCEDURE GETPROCEDURE(modname, name:ARRAY OF SHORTCHAR;  OUT factory : HashFactory);
+		VAR 
+			fullName : ARRAY 256 OF CHAR;
+			it: Meta.Item; 
+			val: RECORD (Meta.Value) proc: HashFactory END; 
+			ok: BOOLEAN;
+		BEGIN
+			fullName := modname$ + "." + name$;
+			Meta.LookupPath(fullName, it);
+			IF it.Valid() THEN
+			    it.GetVal(val, ok);
+    			IF ok THEN (* val.proc # NIL, теперь можно вызвать *) 
+					factory := val.proc; 
+				END
+		    END
+		END GETPROCEDURE;
+
+	PROCEDURE NewHash* (IN modname : ARRAY OF SHORTCHAR): Hash;
+		VAR
+			hash: Hash;
+			factory: HashFactory;
+
+
+	BEGIN
+		ASSERT(LEN(modname) < 57);
+		hash := NIL;
+		GETPROCEDURE(modname, "NewHash", factory);
+		IF factory # NIL THEN
+			hash := factory()
+		END;
+		RETURN hash
+	END NewHash;
+
+END CryptoHashes.

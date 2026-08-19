@@ -1,0 +1,382 @@
+MODULE CryptoSHA1;
+
+	(** AUTHOR "G.F."; PURPOSE "SHA-1"; *)
+
+	IMPORT Hashes := CryptoHashes, U := CryptoUtils, AO := CryptoAosCompat, SYSTEM;
+
+	CONST
+		HashSize* = 20;
+		BlockSize* = 64;
+
+	TYPE
+		State = ARRAY 5 OF AO.SIGNED32;
+				StateBytes = ARRAY 20 OF AO.UNSIGNED8;
+		SHA1* = RECORD
+			hash : State;
+			Nl, Nh : AO.SIZE;
+			cdata : ARRAY BlockSize OF SHORTCHAR;
+			cn : AO.SIZE
+		END;
+
+
+	TYPE
+		Hash* = POINTER TO EXTENSIBLE RECORD(Hashes.Hash)
+			hash : SHA1
+		END;
+
+
+	PROCEDURE (VAR SELF: SHA1) Initialize* , NEW;
+
+	BEGIN
+		SELF.hash[0] := (67452301H);
+		SELF.hash[1] := (0EFCDAB89H);
+		SELF.hash[2] := (98BADCFEH);
+		SELF.hash[3] := (10325476H);
+		SELF.hash[4] := (0C3D2E1F0H);
+		SELF.Nl := 0;
+		SELF.Nh := 0;
+		SELF.cn := 0
+	END Initialize;
+
+	PROCEDURE tr0019 (a : AO.SIGNED32; VAR b : AO.SIGNED32; c, d, e : AO.SIGNED32; VAR f : AO.SIGNED32; x : SET);
+
+	BEGIN
+		f := ORD(x) + e + 5A827999H + SYSTEM.ROT(a, 5) + ORD(((BITS(c) / BITS(d)) * BITS(b)) / BITS(d));
+		b := SYSTEM.ROT(b, 30)
+	END tr0019;
+
+	PROCEDURE tr2039 (a : AO.SIGNED32; VAR b : AO.SIGNED32; c, d, e : AO.SIGNED32; VAR f : AO.SIGNED32; x : SET);
+
+	BEGIN
+		f := ORD(x) + e + 6ED9EBA1H + SYSTEM.ROT(a, 5) + ORD(BITS(b) / BITS(c) / BITS(d));
+		b := SYSTEM.ROT(b, 30)
+	END tr2039;
+
+	PROCEDURE tr4059 (a : AO.SIGNED32; VAR b : AO.SIGNED32; c, d, e : AO.SIGNED32; VAR f : AO.SIGNED32; x : SET);
+
+	BEGIN
+		f := ORD(x) + e + (8F1BBCDCH) + SYSTEM.ROT(a, 5) + ORD((BITS(b) * BITS(c)) + ((BITS(b) + BITS(c)) * BITS(d)));
+		b := SYSTEM.ROT(b, 30)
+	END tr4059;
+
+	PROCEDURE tr6079 (a : AO.SIGNED32; VAR b : AO.SIGNED32; c, d, e : AO.SIGNED32; VAR f : AO.SIGNED32; x : SET);
+
+	BEGIN
+		f := ORD(x) + e + (0CA62C1D6H) + SYSTEM.ROT(a, 5) + ORD(BITS(b) / BITS(c) / BITS(d));
+		b := SYSTEM.ROT(b, 30)
+	END tr6079;
+
+	PROCEDURE HashBlock (VAR state : State; IN buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+		VAR
+			A, B, C, D, E, T: AO.SIGNED32;
+			x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, xa, xb, xc, xd, xe, xf: SET;
+
+
+	BEGIN
+		A := state[0];
+		B := state[1];
+		C := state[2];
+		D := state[3];
+		E := state[4];
+		x0 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(A, B, C, D, E, T, x0);
+		x1 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(T, A, B, C, D, E, x1);
+		x2 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(E, T, A, B, C, D, x2);
+		x3 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(D, E, T, A, B, C, x3);
+		x4 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(C, D, E, T, A, B, x4);
+		x5 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(B, C, D, E, T, A, x5);
+		x6 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(A, B, C, D, E, T, x6);
+		x7 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(T, A, B, C, D, E, x7);
+		x8 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(E, T, A, B, C, D, x8);
+		x9 := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(D, E, T, A, B, C, x9);
+		xa := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(C, D, E, T, A, B, xa);
+		xb := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(B, C, D, E, T, A, xb);
+		xc := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(A, B, C, D, E, T, xc);
+		xd := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(T, A, B, C, D, E, xd);
+		xe := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(E, T, A, B, C, D, xe);
+		xf := U.SetFromBufferBE(buf, pos);
+		INC(pos, 4);
+		tr0019(D, E, T, A, B, C, xf);
+		x0 := SYSTEM.ROT(x0 / x2 / x8 / xd, 1);
+		tr0019(C, D, E, T, A, B, x0);
+		x1 := SYSTEM.ROT(x1 / x3 / x9 / xe, 1);
+		tr0019(B, C, D, E, T, A, x1);
+		x2 := SYSTEM.ROT(x2 / x4 / xa / xf, 1);
+		tr0019(A, B, C, D, E, T, x2);
+		x3 := SYSTEM.ROT(x3 / x5 / xb / x0, 1);
+		tr0019(T, A, B, C, D, E, x3);
+		x4 := SYSTEM.ROT(x4 / x6 / xc / x1, 1);
+		tr2039(E, T, A, B, C, D, x4);
+		x5 := SYSTEM.ROT(x5 / x7 / xd / x2, 1);
+		tr2039(D, E, T, A, B, C, x5);
+		x6 := SYSTEM.ROT(x6 / x8 / xe / x3, 1);
+		tr2039(C, D, E, T, A, B, x6);
+		x7 := SYSTEM.ROT(x7 / x9 / xf / x4, 1);
+		tr2039(B, C, D, E, T, A, x7);
+		x8 := SYSTEM.ROT(x8 / xa / x0 / x5, 1);
+		tr2039(A, B, C, D, E, T, x8);
+		x9 := SYSTEM.ROT(x9 / xb / x1 / x6, 1);
+		tr2039(T, A, B, C, D, E, x9);
+		xa := SYSTEM.ROT(xa / xc / x2 / x7, 1);
+		tr2039(E, T, A, B, C, D, xa);
+		xb := SYSTEM.ROT(xb / xd / x3 / x8, 1);
+		tr2039(D, E, T, A, B, C, xb);
+		xc := SYSTEM.ROT(xc / xe / x4 / x9, 1);
+		tr2039(C, D, E, T, A, B, xc);
+		xd := SYSTEM.ROT(xd / xf / x5 / xa, 1);
+		tr2039(B, C, D, E, T, A, xd);
+		xe := SYSTEM.ROT(xe / x0 / x6 / xb, 1);
+		tr2039(A, B, C, D, E, T, xe);
+		xf := SYSTEM.ROT(xf / x1 / x7 / xc, 1);
+		tr2039(T, A, B, C, D, E, xf);
+		x0 := SYSTEM.ROT(x0 / x2 / x8 / xd, 1);
+		tr2039(E, T, A, B, C, D, x0);
+		x1 := SYSTEM.ROT(x1 / x3 / x9 / xe, 1);
+		tr2039(D, E, T, A, B, C, x1);
+		x2 := SYSTEM.ROT(x2 / x4 / xa / xf, 1);
+		tr2039(C, D, E, T, A, B, x2);
+		x3 := SYSTEM.ROT(x3 / x5 / xb / x0, 1);
+		tr2039(B, C, D, E, T, A, x3);
+		x4 := SYSTEM.ROT(x4 / x6 / xc / x1, 1);
+		tr2039(A, B, C, D, E, T, x4);
+		x5 := SYSTEM.ROT(x5 / x7 / xd / x2, 1);
+		tr2039(T, A, B, C, D, E, x5);
+		x6 := SYSTEM.ROT(x6 / x8 / xe / x3, 1);
+		tr2039(E, T, A, B, C, D, x6);
+		x7 := SYSTEM.ROT(x7 / x9 / xf / x4, 1);
+		tr2039(D, E, T, A, B, C, x7);
+		x8 := SYSTEM.ROT(x8 / xa / x0 / x5, 1);
+		tr4059(C, D, E, T, A, B, x8);
+		x9 := SYSTEM.ROT(x9 / xb / x1 / x6, 1);
+		tr4059(B, C, D, E, T, A, x9);
+		xa := SYSTEM.ROT(xa / xc / x2 / x7, 1);
+		tr4059(A, B, C, D, E, T, xa);
+		xb := SYSTEM.ROT(xb / xd / x3 / x8, 1);
+		tr4059(T, A, B, C, D, E, xb);
+		xc := SYSTEM.ROT(xc / xe / x4 / x9, 1);
+		tr4059(E, T, A, B, C, D, xc);
+		xd := SYSTEM.ROT(xd / xf / x5 / xa, 1);
+		tr4059(D, E, T, A, B, C, xd);
+		xe := SYSTEM.ROT(xe / x0 / x6 / xb, 1);
+		tr4059(C, D, E, T, A, B, xe);
+		xf := SYSTEM.ROT(xf / x1 / x7 / xc, 1);
+		tr4059(B, C, D, E, T, A, xf);
+		x0 := SYSTEM.ROT(x0 / x2 / x8 / xd, 1);
+		tr4059(A, B, C, D, E, T, x0);
+		x1 := SYSTEM.ROT(x1 / x3 / x9 / xe, 1);
+		tr4059(T, A, B, C, D, E, x1);
+		x2 := SYSTEM.ROT(x2 / x4 / xa / xf, 1);
+		tr4059(E, T, A, B, C, D, x2);
+		x3 := SYSTEM.ROT(x3 / x5 / xb / x0, 1);
+		tr4059(D, E, T, A, B, C, x3);
+		x4 := SYSTEM.ROT(x4 / x6 / xc / x1, 1);
+		tr4059(C, D, E, T, A, B, x4);
+		x5 := SYSTEM.ROT(x5 / x7 / xd / x2, 1);
+		tr4059(B, C, D, E, T, A, x5);
+		x6 := SYSTEM.ROT(x6 / x8 / xe / x3, 1);
+		tr4059(A, B, C, D, E, T, x6);
+		x7 := SYSTEM.ROT(x7 / x9 / xf / x4, 1);
+		tr4059(T, A, B, C, D, E, x7);
+		x8 := SYSTEM.ROT(x8 / xa / x0 / x5, 1);
+		tr4059(E, T, A, B, C, D, x8);
+		x9 := SYSTEM.ROT(x9 / xb / x1 / x6, 1);
+		tr4059(D, E, T, A, B, C, x9);
+		xa := SYSTEM.ROT(xa / xc / x2 / x7, 1);
+		tr4059(C, D, E, T, A, B, xa);
+		xb := SYSTEM.ROT(xb / xd / x3 / x8, 1);
+		tr4059(B, C, D, E, T, A, xb);
+		xc := SYSTEM.ROT(xc / xe / x4 / x9, 1);
+		tr6079(A, B, C, D, E, T, xc);
+		xd := SYSTEM.ROT(xd / xf / x5 / xa, 1);
+		tr6079(T, A, B, C, D, E, xd);
+		xe := SYSTEM.ROT(xe / x0 / x6 / xb, 1);
+		tr6079(E, T, A, B, C, D, xe);
+		xf := SYSTEM.ROT(xf / x1 / x7 / xc, 1);
+		tr6079(D, E, T, A, B, C, xf);
+		x0 := SYSTEM.ROT(x0 / x2 / x8 / xd, 1);
+		tr6079(C, D, E, T, A, B, x0);
+		x1 := SYSTEM.ROT(x1 / x3 / x9 / xe, 1);
+		tr6079(B, C, D, E, T, A, x1);
+		x2 := SYSTEM.ROT(x2 / x4 / xa / xf, 1);
+		tr6079(A, B, C, D, E, T, x2);
+		x3 := SYSTEM.ROT(x3 / x5 / xb / x0, 1);
+		tr6079(T, A, B, C, D, E, x3);
+		x4 := SYSTEM.ROT(x4 / x6 / xc / x1, 1);
+		tr6079(E, T, A, B, C, D, x4);
+		x5 := SYSTEM.ROT(x5 / x7 / xd / x2, 1);
+		tr6079(D, E, T, A, B, C, x5);
+		x6 := SYSTEM.ROT(x6 / x8 / xe / x3, 1);
+		tr6079(C, D, E, T, A, B, x6);
+		x7 := SYSTEM.ROT(x7 / x9 / xf / x4, 1);
+		tr6079(B, C, D, E, T, A, x7);
+		x8 := SYSTEM.ROT(x8 / xa / x0 / x5, 1);
+		tr6079(A, B, C, D, E, T, x8);
+		x9 := SYSTEM.ROT(x9 / xb / x1 / x6, 1);
+		tr6079(T, A, B, C, D, E, x9);
+		xa := SYSTEM.ROT(xa / xc / x2 / x7, 1);
+		tr6079(E, T, A, B, C, D, xa);
+		xb := SYSTEM.ROT(xb / xd / x3 / x8, 1);
+		tr6079(D, E, T, A, B, C, xb);
+		xc := SYSTEM.ROT(xc / xe / x4 / x9, 1);
+		tr6079(C, D, E, T, A, B, xc);
+		xd := SYSTEM.ROT(xd / xf / x5 / xa, 1);
+		tr6079(B, C, D, E, T, A, xd);
+		xe := SYSTEM.ROT(xe / x0 / x6 / xb, 1);
+		tr6079(A, B, C, D, E, T, xe);
+		xf := SYSTEM.ROT(xf / x1 / x7 / xc, 1);
+		tr6079(T, A, B, C, D, E, xf);
+		INC(state[0], E);
+		INC(state[1], T);
+		INC(state[2], A);
+		INC(state[3], B);
+		INC(state[4], C)
+	END HashBlock;
+
+	PROCEDURE (VAR SELF: SHA1) HashContextBlock , NEW;
+
+	BEGIN
+		HashBlock(SELF.hash, SELF.cdata, 0);
+		SELF.cn := 0
+	END HashContextBlock;
+
+	PROCEDURE (VAR SELF: SHA1) OPERATORBRACKETS* (IN data : ARRAY OF SHORTCHAR; pos, len : AO.SIZE), NEW;
+		VAR
+			l: AO.SIZE;
+			i: AO.SIZE;
+			n: AO.SIZE;
+
+	BEGIN
+		ASSERT(SELF.cn >= 0);
+		l := SELF.Nl + len * 8;
+		IF l < SELF.Nl THEN
+			INC(SELF.Nh)
+		END;
+		SELF.Nh := SELF.Nh + ASH(len, (-29));
+		SELF.Nl := l;
+		IF SELF.cn > 0 THEN
+			IF SELF.cn + len < BlockSize THEN
+				i := SELF.cn;
+				INC(SELF.cn, len);
+				WHILE i < SELF.cn DO
+					SELF.cdata[i] := data[pos];
+					INC(i);
+					INC(pos)
+				END;
+				RETURN
+			ELSE
+				WHILE SELF.cn < BlockSize DO
+					SELF.cdata[SELF.cn] := data[pos];
+					INC(SELF.cn);
+					INC(pos);
+					DEC(len)
+				END;
+				SELF.HashContextBlock
+			END
+		END;
+		n := 0;
+		WHILE n < len DIV BlockSize DO
+			HashBlock(SELF.hash, data, pos);
+			INC(n);
+			INC(pos, BlockSize)
+		END;
+		len := len MOD BlockSize;
+		WHILE SELF.cn < len DO
+			SELF.cdata[SELF.cn] := data[pos];
+			INC(SELF.cn);
+			INC(pos)
+		END
+	END OPERATORBRACKETS;
+
+	PROCEDURE (VAR SELF: SHA1) GetHash* (VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE), NEW;
+		VAR
+			p: INTEGER;
+
+	BEGIN
+		SELF.cdata[SELF.cn] := 80X;
+		INC(SELF.cn);
+		IF SELF.cn > BlockSize - 8 THEN
+			WHILE SELF.cn < BlockSize DO
+				SELF.cdata[SELF.cn] := 0X;
+				INC(SELF.cn)
+			END;
+			SELF.HashContextBlock
+		END;
+		p := BlockSize - 8;
+		WHILE SELF.cn < p DO
+			SELF.cdata[SELF.cn] := 0X;
+			INC(SELF.cn)
+		END;
+				U.IntToBufferBE(SELF.Nh, SELF.cdata, p);
+		U.IntToBufferBE(SELF.Nl, SELF.cdata, p + 4);
+		SELF.HashContextBlock;
+		U.BlockToBufferBE(SYSTEM.VAL(StateBytes, SELF.hash), buf, pos)
+	END GetHash;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: Hash) Init* ;
+
+	BEGIN
+		SELF.SetNameAndSize("sha1", HashSize);
+		SELF.initialized := FALSE
+	END Init;
+
+	PROCEDURE (SELF: Hash) Initialize* ;
+
+	BEGIN
+		SELF.hash.Initialize;
+		SELF.initialized := TRUE
+	END Initialize;
+
+	PROCEDURE (SELF: Hash) Update* (IN data : ARRAY OF SHORTCHAR; pos, len : AO.SIZE);
+
+	BEGIN
+		ASSERT(SELF.initialized);
+		SELF.hash.OPERATORBRACKETS(data, pos, len)
+	END Update;
+
+	PROCEDURE (SELF: Hash) GetHash* (VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+
+	BEGIN
+		SELF.hash.GetHash(buf, pos)
+	END GetHash;
+
+	PROCEDURE NewHash* (): Hashes.Hash;
+		VAR
+			h: Hash;
+
+
+	BEGIN
+		NEW(h);h.Init();
+		RETURN h
+	END NewHash;
+
+END CryptoSHA1.

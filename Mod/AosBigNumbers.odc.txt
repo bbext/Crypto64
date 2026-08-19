@@ -1,0 +1,1405 @@
+MODULE CryptoAosBigNumbers;
+
+(* 2001.10.07	g.f.	 *)
+(* 2002.08.12	g.f.	added neg. numbers, GCD and ModInverse  *)
+(* 2002.09.24	g.f.	inceased digit size from 8 bit to 32 bit *)
+(* 2002.10.04	g.f.	faster version of ModExp (uses montgomery multiplications now) *)
+(* 2005.07.07	g.f.	Fabian Nart's enhancements incorporated *)
+(* 2010.01.12	g.f.	interface cleanup, most procedures got functions *)
+
+	IMPORT Streams := CryptoAosStreams, Random := CryptoAosRandom, Kernel, Log := (*CONV FROM KernelLog*)
+StdLog, AO := CryptoAosCompat, SYSTEM;
+	
+	CONST
+		BufferPoolSize = 16;
+
+	TYPE
+		BNdigit = AO.UNSIGNED32;
+		digits = POINTER TO ARRAY OF BNdigit;
+		BigNumber* = POINTER TO EXTENSIBLE RECORD
+			len* : AO.SIZE;
+			neg* : BOOLEAN;
+			d* : digits
+		END;
+		dig2 = ARRAY 2 OF BNdigit;
+		dig3 = ARRAY 3 OF BNdigit;
+		Montgomery = POINTER TO EXTENSIBLE RECORD
+			bits : AO.SIZE;
+			r, n, t1, t2 : BigNumber
+		END;
+
+
+	VAR
+		bufferPool: ARRAY BufferPoolSize OF digits;
+		nextFreeBuffer: INTEGER;
+		randomgenerator: Random.Generator;
+
+	PROCEDURE (SELF: BigNumber) Init (bitsize : AO.SIZE), NEW;
+		VAR
+			n: AO.SIZE;
+
+
+	BEGIN
+		IF bitsize # 0 THEN
+			n := (bitsize + 31) DIV 32;
+			INC(n, ((-n)) MOD 16);
+			NEW(SELF.d, n)
+		END;
+		SELF.len := 0;
+		SELF.neg := FALSE
+	END Init;
+
+	PROCEDURE (SELF: BigNumber) Mask* (bits : AO.SIZE), NEW;
+		VAR
+			w, b: AO.SIZE;
+	BEGIN
+		w := bits DIV 32;
+		b := bits MOD 32;
+		SELF.len := w;
+		IF b # 0 THEN
+			INC(SELF.len);
+			SELF.d[w] := AO.TOUNSIGNED32(ORD(BITS(AO.TOSIGNED32(SELF.d[w]))*
+{0..b}))
+		END
+	END Mask;
+
+	PROCEDURE (SELF: BigNumber) IsZero* (): BOOLEAN, NEW;
+
+	BEGIN
+		RETURN (SELF.len = 0) OR ((SELF.len = 1) & (AO.UEq32(SELF.d[0], AO.TOUNSIGNED32(0))))
+	END IsZero;
+
+	PROCEDURE cmpd (VAR a, b : digits; len : AO.SIZE): AO.SIGNED8;
+		VAR
+			i: AO.SIZE;
+	BEGIN
+		i := len - 1;
+		WHILE (i >= 0) & (a[i] = b[i]) DO
+			DEC(i)
+		END;
+		IF i < 0 THEN
+			RETURN SHORT(0)
+		ELSE
+			IF AO.ULss32(b[i],a[i]) THEN
+				RETURN SHORT(1)
+			ELSE
+				RETURN SHORT((-1))
+			END
+		END
+	END cmpd;
+
+	PROCEDURE ucmp (VAR a, b : BigNumber): AO.SIGNED8;
+	BEGIN
+		IF a.len > b.len THEN
+			RETURN SHORT(1)
+		ELSIF a.len < b.len THEN
+			RETURN SHORT((-1))
+		ELSE
+			RETURN cmpd(a.d, b.d, a.len)
+		END
+	END ucmp;
+
+	PROCEDURE Cmp* (a, b : BigNumber): AO.SIGNED8;
+
+	BEGIN
+		IF a.neg # b.neg THEN
+			IF a.neg THEN
+				RETURN SHORT((-1))
+			ELSE
+				RETURN SHORT(1)
+			END
+		ELSIF a.neg THEN
+			RETURN SHORT(SHORT(ucmp(a, b) * (-1)))
+		ELSE
+			RETURN ucmp(a, b)
+		END
+	END Cmp;
+
+	PROCEDURE (SELF: BigNumber) EQ* (b : BigNumber): BOOLEAN, NEW;
+	BEGIN
+		RETURN Cmp(SELF, b) = 0
+	END EQ;
+
+	PROCEDURE (SELF: BigNumber) NEQ* (b : BigNumber): BOOLEAN, NEW;
+	BEGIN
+		RETURN Cmp(SELF, b) # 0
+	END NEQ;
+
+	PROCEDURE (SELF: BigNumber) GT* (b : BigNumber): BOOLEAN, NEW;
+	BEGIN
+		RETURN Cmp(SELF, b) > 0
+	END GT;
+
+	PROCEDURE (SELF: BigNumber) GEQ* (b : BigNumber): BOOLEAN, NEW;
+	BEGIN
+		RETURN Cmp(SELF, b) >= 0
+	END GEQ;
+
+	PROCEDURE (SELF: BigNumber) adjust (newlen : AO.SIZE), NEW;
+		VAR n, i: AO.SIZE; nd: digits;
+	BEGIN
+		n := 16;
+		WHILE n < newlen DO
+			INC(n, 16)
+		END;
+		IF LEN(SELF.d) < n THEN
+			NEW(nd, n);
+			FOR i := 0 TO LEN(SELF.d^) - 1 DO
+				nd[i] := SELF.d[i]
+			END;
+			SELF.d := nd
+		END
+	END adjust;
+
+	PROCEDURE (SELF: BigNumber) Shift* (n : AO.SIZE), NEW;
+		VAR right: BOOLEAN; w, bits, i, l: AO.SIZE; a, b: BNdigit;
+	BEGIN
+		IF SELF.len = 0 THEN
+			RETURN
+		END;
+		IF n < 0 THEN
+			right := TRUE;
+			n := ABS(n)
+		ELSE
+			right := FALSE
+		END;
+		w := n DIV 32;
+		bits := n MOD 32;
+		IF ~right THEN
+			SELF.adjust(SELF.len + w + 1);
+			IF w > 0 THEN
+				FOR i := SELF.len - 1 TO 0 BY (-1) DO
+					SELF.d[i + w] := SELF.d[i]
+				END;
+				FOR i := 0 TO w - 1 DO
+					SELF.d[i] := AO.TOUNSIGNED32(0)
+				END;
+				INC(SELF.len, w)
+			END;
+			IF bits > 0 THEN
+				SELF.d[SELF.len] := AO.TOUNSIGNED32(0);
+				FOR i := SELF.len TO 0 BY (-1) DO
+					a := SELF.d[i];
+					IF i > 0 THEN
+						b := SELF.d[i - 1]
+					ELSE
+						b := AO.TOUNSIGNED32(0)
+					END;
+					SELF.d[i] := AO.UAdd32(AO.ULSH32(a, bits), AO.ULSH32(b, (-32) + bits))
+				END;
+				IF AO.UNeq32(SELF.d[SELF.len], AO.TOUNSIGNED32(0)) THEN
+					INC(SELF.len)
+				END
+			END
+		ELSE
+			IF w > 0 THEN
+				FOR i := 0 TO SELF.len - w - 1 DO
+					SELF.d[i] := SELF.d[i + w]
+				END;
+				DEC(SELF.len, w)
+			END;
+			IF bits > 0 THEN
+				l := SELF.len;
+				FOR i := 0 TO l - 1 DO
+					a := SELF.d[i];
+					IF i < l - 1 THEN
+						b := SELF.d[i + 1]
+					ELSE
+						b := AO.TOUNSIGNED32(0)
+					END;
+					SELF.d[i] := AO.UAdd32(AO.ULSH32(a, (-bits)), AO.ULSH32(b, 32 - bits))
+				END;
+				IF AO.UEq32(SELF.d[l - 1], AO.TOUNSIGNED32(0)) THEN
+					DEC(SELF.len)
+				END
+			END
+		END
+	END Shift;
+
+	PROCEDURE fixlen (VAR d : digits; VAR len : AO.SIZE);
+
+	BEGIN
+		WHILE (len > 0) & (AO.UEq32(d[len - 1], AO.TOUNSIGNED32(0))) DO
+			DEC(len)
+		END
+	END fixlen;
+
+	PROCEDURE (SELF: BigNumber) Dec* , NEW;
+		VAR
+			i: AO.SIZE;
+	BEGIN
+		i := 0;
+		IF SELF.IsZero() THEN
+			SELF.len := 1;
+			SELF.neg := TRUE;
+			SELF.d[0] := AO.TOUNSIGNED32(1)
+		ELSIF SELF.neg THEN
+			WHILE (AO.UEq32(SELF.d[i], AO.TOUNSIGNED32(-1))) & (i < SELF.len) DO
+				SELF.d[i] := AO.TOUNSIGNED32(0);
+				INC(i)
+			END;
+			IF i = SELF.len THEN
+				SELF.d[i] := AO.TOUNSIGNED32(1);
+				INC(SELF.len)
+			ELSE
+				AO.UINC32(SELF.d[i])
+			END
+		ELSE
+			WHILE AO.UEq32(SELF.d[i], AO.TOUNSIGNED32(0)) DO
+				SELF.d[i] := AO.TOUNSIGNED32(-1);
+				INC(i)
+			END;
+			AO.UDEC32(SELF.d[i]);
+			fixlen(SELF.d, SELF.len)
+		END
+	END Dec;
+
+	PROCEDURE (SELF: BigNumber) Inc* , NEW;
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		i := 0;
+		IF ~SELF.neg THEN
+			WHILE (AO.UEq32(SELF.d[i], AO.TOUNSIGNED32(-1))) & (i < SELF.len) DO
+				SELF.d[i] := AO.TOUNSIGNED32(0);
+				INC(i)
+			END;
+			IF i = SELF.len THEN
+				SELF.d[i] := AO.TOUNSIGNED32(1);
+				INC(SELF.len)
+			ELSE
+				AO.UINC32(SELF.d[i])
+			END
+		ELSE
+			WHILE SELF.d[i] = AO.TOUNSIGNED32(0) DO
+				SELF.d[i] := AO.TOUNSIGNED32(-1);
+				INC(i)
+			END;
+			AO.UDEC32(SELF.d[i]);
+			fixlen(SELF.d, SELF.len);
+			IF SELF.len = 0 THEN
+				SELF.neg := FALSE
+			END
+		END
+	END Inc;
+
+	PROCEDURE (SELF: BigNumber) Negate* , NEW;
+
+	BEGIN
+		IF ~SELF.IsZero() THEN
+			SELF.neg := ~SELF.neg
+		END
+	END Negate;
+
+	PROCEDURE (SELF: BigNumber) BitSize* (): AO.SIZE, NEW;
+		VAR n: AO.SIZE; t: BNdigit;
+	BEGIN
+		IF SELF.len = 0 THEN
+			RETURN 0
+		ELSE
+			n := (SELF.len - 1) * 32
+		END;
+		t := SELF.d[SELF.len - 1];
+		WHILE AO.UNeq32(t, AO.TOUNSIGNED32(0)) DO
+			INC(n);
+			t := AO.ULSH32(t, (-1))
+		END;
+		RETURN n
+	END BitSize;
+
+	PROCEDURE (SELF: BigNumber) BitSet* (n : AO.SIZE): BOOLEAN, NEW;
+		VAR
+			w, bit: AO.SIZE;
+	BEGIN
+		w := n DIV 32;
+		bit := n MOD 32;
+		IF w >= SELF.len THEN
+			RETURN FALSE
+		ELSE
+			RETURN bit IN BITS(AO.TOSIGNED32(SELF.d[w]))
+		END
+	END BitSet;
+
+
+	PROCEDURE copy (a, b : digits; len : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		FOR i := 0 TO len - 1 DO
+			b[i] := a[i]
+		END
+	END copy;
+
+	PROCEDURE Copy* (VAR a, b : BigNumber);
+
+	BEGIN
+		ASSERT((a # NIL) & (SYSTEM.ADR(a) # SYSTEM.ADR(b)));
+		IF (b = NIL) OR (LEN(b.d^) < a.len) THEN
+			NEW(b);b.Init(a.len * 32)
+		END;
+		copy(a.d, b.d, a.len);
+		b.len := a.len
+	END Copy;
+
+
+	PROCEDURE AssignInt* (VAR b : BigNumber; val : INTEGER);
+
+	BEGIN
+		NEW(b);b.Init(64);
+		IF val < 0 THEN
+			b.neg := TRUE;
+			val := ABS(val)
+		END;
+		IF val # 0 THEN
+			b.len := 1;
+			b.d[0] := AO.TOUNSIGNED32(val)
+		ELSE
+			b.len := 0
+		END
+	END AssignInt;
+
+
+	PROCEDURE adjust (VAR d : digits; dl, len : AO.SIZE);
+		VAR
+			n, i: AO.SIZE;
+			nd: digits;
+
+
+	BEGIN
+		ASSERT(d # NIL);
+		n := 16;
+		WHILE n < len DO
+			INC(n, 16)
+		END;
+		IF LEN(d) < n THEN
+			NEW(nd, n);
+			FOR i := 0 TO dl - 1 DO
+				nd[i] := d[i]
+			END;
+			d := nd
+		END
+	END adjust;
+
+
+	PROCEDURE Invert (x : BNdigit): BNdigit;
+	BEGIN
+		RETURN AO.TOUNSIGNED32(ORD(-BITS(AO.TOSIGNED32(x))))
+	END Invert;
+
+	PROCEDURE add (a, b : digits; VAR c : digits; al, bl : AO.SIZE; VAR cl : AO.SIZE);
+		VAR
+			i, n: AO.SIZE;
+			A, B, x: BNdigit;
+			carry: BOOLEAN;
+
+
+	BEGIN
+		n := MAX(al, bl);
+		carry := FALSE;
+		IF LEN(c^) < (n + 1) THEN
+			adjust(c, cl, n + 1)
+		END;
+		FOR i := 0 TO n - 1 DO
+			IF i >= al THEN
+				A := AO.TOUNSIGNED32(0)
+			ELSE
+				A := a[i]
+			END;
+			IF i >= bl THEN
+				B := AO.TOUNSIGNED32(0)
+			ELSE
+				B := b[i]
+			END;
+			x := (AO.UAdd32(A, B));
+			IF carry THEN
+				AO.UINC32(x);
+				carry := AO.ULeq32(Invert(A), B)
+			ELSE
+				carry := AO.ULss32(x, B)
+			END;
+			c[i] := x
+		END;
+		IF carry THEN
+			c[n] := AO.TOUNSIGNED32(1);
+			INC(n)
+		END;
+		cl := n
+	END add;
+
+
+	PROCEDURE sub (a, b : digits; VAR c : digits; al, bl : AO.SIZE; VAR cl : AO.SIZE);
+		VAR
+			i, n: AO.SIZE;
+			A, B, x: BNdigit;
+			borrow: BOOLEAN;
+
+
+	BEGIN
+		n := MAX(al, bl);
+		borrow := FALSE;
+		IF LEN(c^) < n THEN
+			adjust(c, cl, n)
+		END;
+		FOR i := 0 TO n - 1 DO
+			IF i >= al THEN
+				A := AO.TOUNSIGNED32(0)
+			ELSE
+				A := a[i]
+			END;
+			IF i >= bl THEN
+				B := AO.TOUNSIGNED32(0)
+			ELSE
+				B := b[i]
+			END;
+			x := (AO.USub32(A, B));
+			IF borrow THEN
+				AO.UDEC32(x);
+				borrow := AO.ULeq32(A, B)
+			ELSE
+				borrow := AO.ULss32(A, B)
+			END;
+			c[i] := x
+		END;
+		ASSERT(~borrow);
+		WHILE (n > 0) & (AO.UEq32(c[n - 1], AO.TOUNSIGNED32(0))) DO
+			DEC(n)
+		END;
+		cl := n
+	END sub;
+
+	PROCEDURE Sub* (a, b : BigNumber): BigNumber;
+		VAR
+			sd: digits;
+			l, sl: AO.SIZE;
+			c: BigNumber;
+
+
+	BEGIN
+		ASSERT((a # NIL) & (b # NIL));
+		l := MAX(a.len, b.len) + 1;
+		NEW(c); c.Init(l * 32);
+		sd := c.d;
+		IF a.neg # b.neg THEN
+			add(a.d, b.d, sd, a.len, b.len, sl);
+			c.neg := a.neg
+		ELSE
+			IF ucmp(a, b) >= 0 THEN
+				sub(a.d, b.d, sd, a.len, b.len, sl);
+				c.neg := a.neg
+			ELSE
+				sub(b.d, a.d, sd, b.len, a.len, sl);
+				c.neg := ~a.neg
+			END
+		END;
+		IF sd # c.d THEN
+			adjust(c.d, 0, sl);
+			copy(sd, c.d, sl)
+		END;
+		c.len := sl;
+		IF c.IsZero() THEN
+			c.neg := FALSE
+		END;
+		RETURN c
+	END Sub;
+
+	PROCEDURE GetBuffer (): digits;
+		VAR d: digits;
+	BEGIN
+		IF nextFreeBuffer > (-1) THEN
+			d := bufferPool[nextFreeBuffer];
+			DEC(nextFreeBuffer)
+		ELSE
+			NEW(d, 256)
+		END;
+		RETURN d
+	END GetBuffer;
+
+	PROCEDURE div64 (IN a : dig2; VAR b : BNdigit): INTEGER;
+		VAR
+			bit: INTEGER;
+			q: SET;
+			r: BNdigit;
+			overflow: BOOLEAN;
+	BEGIN
+		IF AO.UEq32(a[1], AO.TOUNSIGNED32(0)) THEN
+			IF (AO.ULss32(a[0], AO.TOUNSIGNED32(80000000H))) & (AO.ULss32(b, AO.TOUNSIGNED32(80000000H))) THEN
+				RETURN AO.TOSIGNED32(AO.UDiv32(a[0], b))
+			ELSIF AO.ULss32(a[0], b) THEN
+				RETURN 0
+			ELSIF a[0] = b THEN
+				RETURN 1
+			END;
+			bit := 31
+		ELSIF a[1] = b THEN
+			RETURN (-1)
+		ELSE
+			bit := 63
+		END;
+		q := {};
+		r := AO.TOUNSIGNED32(0);
+		WHILE (bit >= 0) & ~(bit MOD 32 IN BITS(AO.TOSIGNED32(a[bit DIV 32]))) DO
+			DEC(bit)
+		END;
+		WHILE bit >= 0 DO
+			overflow := 31 IN BITS(AO.TOSIGNED32(r));
+			r := AO.TOUNSIGNED32(ASH(AO.TOSIGNED32(r), 1));
+			IF bit MOD 32 IN AO.UBITS32((a[bit DIV 32])) THEN
+				AO.UINC32(r)
+			END;
+			IF overflow OR (AO.ULeq32(b, r)) THEN
+				r := (AO.USub32(r, b));
+				IF bit < 32 THEN
+					INCL(q, bit)
+				ELSE
+					q := {0..31}
+				END
+			END;
+			DEC(bit)
+		END;
+		RETURN ORD(q)
+	END div64;
+
+	PROCEDURE div96 (IN a : dig3; IN b : dig2): INTEGER;
+		VAR bit: INTEGER; r: dig2; q: SET;
+			overflow, borrow: BOOLEAN;
+
+		PROCEDURE ge (IN a, b : dig2): BOOLEAN;
+		BEGIN
+			IF a[1] = b[1] THEN
+				RETURN AO.UGeq32(a[0], b[0])
+			ELSE
+				RETURN AO.UGeq32(a[1], b[1])
+			END
+		END ge;
+
+		PROCEDURE shift (VAR x : dig2);
+		BEGIN
+			overflow := 31 IN AO.UBITS32(x[1]);
+			x[1] := AO.UASH32(x[1], 1);
+			IF 31 IN AO.UBITS32(x[0]) THEN
+				AO.UINC32(x[1])
+			END;
+			x[0] := AO.UASH32(x[0], 1)
+		END shift;
+
+	BEGIN
+		IF AO.UEq32(a[2], AO.TOUNSIGNED32(0)) THEN
+			IF AO.ULss32(a[1], b[1]) THEN
+				RETURN 0
+			END;
+			bit := 63
+		ELSE
+			bit := 95
+		END;
+		q := {};
+		r[0] := AO.TOUNSIGNED32(0);
+		r[1] := AO.TOUNSIGNED32(0);
+		WHILE (bit >= 0) & ~(bit MOD 32 IN AO.UBITS32(a[bit DIV 32])) DO
+			DEC(bit)
+		END;
+		WHILE bit >= 0 DO
+			shift(r);
+			IF bit MOD 32 IN AO.UBITS32(a[bit DIV 32]) THEN
+				AO.UINC32(r[0])
+			END;
+			IF overflow OR ge(r, b) THEN
+				borrow := AO.ULeq32(r[0], b[0]);
+				r[0] := AO.USub32(r[0], b[0]);
+				r[1] := AO.USub32(r[1], b[1]);
+				IF borrow THEN
+					AO.UDEC32(r[1])
+				END;
+				IF bit < 32 THEN
+					INCL(q, bit)
+				ELSE
+					q := {0..31}
+				END
+			END;
+			DEC(bit)
+		END;
+		RETURN ORD(q)
+	END div96;
+
+	PROCEDURE muls (a : digits; b : BNdigit; c : digits; al : AO.SIZE; VAR cl : AO.SIZE);
+		VAR
+			carry: BNdigit;
+			tmp64: AO.UNSIGNED64;
+			i: AO.SIZE;
+
+
+	BEGIN
+		carry := AO.TOUNSIGNED32(0);
+		cl := al;
+		FOR i := 0 TO al - 1 DO
+			tmp64 := AO.UAdd64(AO.UMul64(AO.LONG32(a[i]), AO.LONG32(b)), AO.LONG32(carry));
+			c[i] := AO.SHORT64(AO.UMod64(tmp64, AO.TOUNSIGNED64(100000000L)));
+			carry := AO.SHORT64(AO.UDiv64(tmp64, AO.TOUNSIGNED64(100000000L)))
+		END;
+		IF AO.UNeq32(carry, AO.TOUNSIGNED32(0)) THEN
+			c[cl] := carry;
+			INC(cl)
+		END
+	END muls;
+
+	PROCEDURE RecycleBuffer (d : digits);
+
+	BEGIN
+(*WARN CONV NOT SUPPORTED: {EXCLUSIVE}*)
+		IF nextFreeBuffer < BufferPoolSize - 1 THEN
+			INC(nextFreeBuffer);
+			bufferPool[nextFreeBuffer] := d
+		END
+	END RecycleBuffer;
+
+	PROCEDURE InitRandomgenerator ;
+
+	BEGIN
+		NEW(randomgenerator);
+		randomgenerator.InitSeed(SHORT(Kernel.Time()))
+	END InitRandomgenerator;
+
+	PROCEDURE Div2* (a, b : BigNumber; VAR q, r : BigNumber);
+		VAR
+			td, sd, bd, qd: digits;
+			x: INTEGER;
+			i, tail, bl, tl, sl, ql, qi: AO.SIZE;
+			t3: dig3;
+			t2, d0: dig2;
+			aq, ar: AO.ADDRESS;
+
+
+	BEGIN
+		aq := SYSTEM.ADR(q);
+		ar := SYSTEM.ADR(r);
+		ASSERT((a # NIL) & (b # NIL) & ~b.IsZero() & ~b.neg & (aq # ar));
+		NEW(q); q.Init(a.len * 32);
+		qd := q.d;
+		x := LONG(ucmp(a, b));
+		IF x < 0 THEN
+			AssignInt(q, 0);
+			Copy(a, r)
+		ELSIF x = 0 THEN
+			AssignInt(q, 1);
+			AssignInt(r, 0)
+		ELSE
+			td := GetBuffer();
+			sd := GetBuffer();
+			bd := b.d;
+			bl := b.len;
+			d0[1] := bd[bl - 1];
+			IF bl > 1 THEN
+				d0[0] := bd[bl - 2]
+			ELSE
+				d0[0] := AO.TOUNSIGNED32(0)
+			END;
+			FOR i := 1 TO bl DO
+				td[bl - i] := a.d[a.len - i]
+			END;
+			tl := bl;
+			tail := a.len - bl;
+			ql := tail + 1;
+			qi := ql;
+			LOOP
+				IF tl < bl THEN
+					x := 0
+				ELSE
+					i := tl - 1;
+					IF AO.UEq32(d0[0], AO.TOUNSIGNED32(0)) THEN
+						IF tl > bl THEN
+							t2[1] := td[i];
+							DEC(i)
+						ELSE
+							t2[1] := AO.TOUNSIGNED32(0)
+						END;
+						t2[0] := td[i];
+						x := div64(t2, d0[1])
+					ELSE
+						IF tl > bl THEN
+							t3[2] := td[i];
+							DEC(i)
+						ELSE
+							t3[2] := AO.TOUNSIGNED32(0)
+						END;
+						t3[1] := td[i];
+						IF i > 0 THEN
+							t3[0] := td[i - 1]
+						ELSE
+							t3[0] := AO.TOUNSIGNED32(0)
+						END;
+						x := div96(t3, d0)
+					END
+				END;
+				IF x # 0 THEN
+					muls(bd, AO.TOUNSIGNED32(x), sd, bl, sl);
+					WHILE (sl > tl) OR ((sl = tl) & (cmpd(sd, td, sl) > 0)) DO
+						sub(sd, bd, sd, sl, bl, sl);
+						DEC(x)
+					END;
+					sub(td, sd, td, tl, sl, tl)
+				END;
+				IF (qi = ql) & (x = 0) THEN
+					DEC(ql);
+					DEC(qi)
+				ELSE
+					DEC(qi);
+					qd[qi] := AO.TOUNSIGNED32(x)
+				END;
+				IF tail = 0 THEN
+					EXIT
+				END;
+				DEC(tail);
+				FOR i := tl TO 1 BY (-1) DO
+					td[i] := td[i - 1]
+				END;
+				td[0] := a.d[tail];
+				INC(tl)
+			END;
+			q.len := ql;
+			NEW(r);r.Init(tl * 32);
+			copy(td, r.d, tl);
+			r.len := tl;
+			RecycleBuffer(td);
+			RecycleBuffer(sd)
+		END;
+		IF q.len = 0 THEN
+			q.neg := FALSE
+		ELSE
+			q.neg := a.neg
+		END;
+		IF (r.len # 0) & a.neg THEN
+			q.Dec;
+			r := Sub(b, r)
+		END
+	END Div2;
+
+	PROCEDURE Add* (a, b : BigNumber): BigNumber;
+		VAR
+			sd: digits;
+			l, sl: AO.SIZE;
+			c: BigNumber;
+
+
+	BEGIN
+		ASSERT((a # NIL) & (b # NIL));
+		l := MAX(a.len, b.len) + 1;
+		NEW(c);c.Init(l * 32);
+		sd := c.d;
+		IF a.neg = b.neg THEN
+			add(a.d, b.d, sd, a.len, b.len, sl);
+			c.neg := a.neg
+		ELSE
+			IF ucmp(a, b) >= 0 THEN
+				sub(a.d, b.d, sd, a.len, b.len, sl);
+				c.neg := a.neg
+			ELSE
+				sub(b.d, a.d, sd, b.len, a.len, sl);
+				c.neg := ~a.neg
+			END
+		END;
+		IF sd # c.d THEN
+			adjust(c.d, 0, sl);
+			copy(sd, c.d, sl)
+		END;
+		c.len := sl;
+		IF c.IsZero() THEN
+			c.neg := FALSE
+		END;
+		RETURN c
+	END Add;
+
+
+	PROCEDURE mul (a, b : digits; VAR c : digits; al, bl : AO.SIZE; VAR cl : AO.SIZE);
+		VAR
+			prod, sum, tmp, mulc: BNdigit;
+			addc: BOOLEAN;
+			i, j, pl: AO.SIZE;
+			p: digits;
+			tmp64: AO.UNSIGNED64;
+	BEGIN
+		pl := 0;
+		NEW(p, al + bl + 2);
+		FOR i := 0 TO al + bl + 1 DO
+			p[i] := AO.TOUNSIGNED32(0)
+		END;
+		FOR i := 0 TO bl - 1 DO
+			mulc := AO.TOUNSIGNED32(0);
+			addc := FALSE;
+			pl := i;
+			FOR j := 0 TO al - 1 DO
+				tmp := p[pl];
+				tmp64 := AO.UAdd64(AO.UMul64(AO.LONG32(a[j]), AO.LONG32(b[i])), AO.LONG32(mulc));
+				prod := AO.SHORT64(AO.UMod64(tmp64, AO.TOUNSIGNED64(100000000L)));
+				mulc := AO.SHORT64(AO.UDiv64(tmp64, AO.TOUNSIGNED64(100000000L)));
+				sum := (AO.UAdd32(prod, tmp));
+				IF addc THEN
+					AO.UINC32(sum);
+					addc := AO.ULeq32(Invert(prod), tmp)
+				ELSE
+					addc := AO.ULss32(sum, tmp)
+				END;
+				p[pl] := sum;
+				INC(pl)
+			END;
+			IF addc OR (AO.UNeq32(mulc, AO.TOUNSIGNED32(0))) THEN
+				IF addc THEN
+					AO.UINC32(mulc)
+				END;
+				p[pl] := mulc;
+				INC(pl)
+			END
+		END;
+		c := p;
+		cl := pl;
+		fixlen(c, cl)
+	END mul;
+
+
+
+	PROCEDURE Mul* (a, b : BigNumber): BigNumber;
+		VAR
+			pd: digits;
+			pl: AO.SIZE;
+			c: BigNumber;
+
+
+	BEGIN
+		ASSERT((a # NIL) & (b # NIL));
+		IF (a.len = 0) OR (b.len = 0) THEN
+			AssignInt(c, 0);
+			RETURN c
+		END;
+		NEW(c); c.Init(32);
+		IF a.len >= b.len THEN
+			mul(a.d, b.d, pd, a.len, b.len, pl)
+		ELSE
+			mul(b.d, a.d, pd, b.len, a.len, pl)
+		END;
+		c.d := pd;
+		c.len := pl;
+		c.neg := a.neg # b.neg;
+		RETURN c
+	END Mul;
+
+
+	PROCEDURE Mod* (a, b : BigNumber): BigNumber;
+		VAR dummy, r: BigNumber;
+	BEGIN
+		Div2(a, b, dummy, r);
+		RETURN r
+	END Mod;
+
+	PROCEDURE ModInverse* (a, m : BigNumber): BigNumber;
+		VAR
+			q, t, x: BigNumber;
+			g, v: ARRAY 3 OF BigNumber;
+			p, i, s, tmp, n: AO.SIZE;
+	BEGIN
+		FOR i := 0 TO 2 DO
+			AssignInt(g[i], 0);
+			AssignInt(v[i], 0)
+		END;
+		Copy(a, g[0]);
+		Copy(m, g[1]);
+		AssignInt(v[0], 1);
+		AssignInt(v[1], 0);
+		p := 0;
+		i := 1;
+		s := 2;
+		n := 0;
+		LOOP
+			Div2(g[p], g[i], q, g[s]);
+			t := Mul(q, v[i]);
+			v[s] := Add(v[p], t);
+			INC(n);
+			IF g[s].IsZero() THEN
+				EXIT
+			END;
+			tmp := p;
+			p := i;
+			i := s;
+			s := tmp
+		END;
+		IF (g[i].len = 1) & (AO.UEq32(g[i].d[0], AO.TOUNSIGNED32(1))) THEN
+			IF ODD(n) THEN
+				v[i] := Sub(m, v[i])
+			END;
+			x := Mod(v[i], m)
+		ELSE
+			AssignInt(x, 0)
+		END;
+		RETURN x
+	END ModInverse;
+
+	PROCEDURE (SELF: Montgomery) Init (x : BigNumber), NEW;
+	BEGIN
+		Copy(x, SELF.n);
+		SELF.bits := x.len * 32;
+		AssignInt(SELF.r, 1);
+		SELF.r.Shift(SELF.bits);
+		SELF.r := Sub(SELF.r, ModInverse(SELF.n, SELF.r));
+		SELF.n.adjust(2 * x.len);
+		SELF.r.adjust(2 * x.len);
+		NEW(SELF.t1);SELF.t1.Init(2 * SELF.bits);
+		NEW(SELF.t2);SELF.t2.Init(2 * SELF.bits)
+	END Init;
+
+	PROCEDURE (SELF: Montgomery) Convert (VAR val : BigNumber), NEW;
+		VAR i: AO.SIZE;
+	BEGIN
+		FOR i := 0 TO SELF.bits - 1 DO
+			val.Shift(1);
+			IF ucmp(val, SELF.n) >= 0 THEN
+				val := Sub(val, SELF.n)
+			END
+		END
+	END Convert;
+
+	PROCEDURE (SELF: Montgomery) Reduce (VAR val : BigNumber), NEW;
+
+	BEGIN
+		Copy(val, SELF.t1);
+		SELF.t1.Mask(SELF.bits - 1);
+		mul(SELF.t1.d, SELF.r.d, SELF.t2.d, SELF.t1.len, SELF.r.len, SELF.t2.len);
+		SELF.t2.Mask(SELF.bits - 1);
+		mul(SELF.t2.d, SELF.n.d, SELF.t1.d, SELF.t2.len, SELF.n.len, SELF.t1.len);
+		add(SELF.t1.d, val.d, val.d, SELF.t1.len, val.len, val.len);
+		val.Shift((-SELF.bits));
+		IF ucmp(val, SELF.n) >= 0 THEN
+			sub(val.d, SELF.n.d, val.d, val.len, SELF.n.len, val.len)
+		END
+	END Reduce;
+
+	PROCEDURE (SELF: Montgomery) Mult (a, b : BigNumber): BigNumber, NEW;
+		VAR c: BigNumber;
+	BEGIN
+		NEW(c); c.Init(0);
+		mul(a.d, b.d, c.d, a.len, b.len, c.len);
+		SELF.Reduce(c);
+		RETURN c
+	END Mult;
+
+	PROCEDURE RandomBytes* (VAR buf : ARRAY OF SHORTCHAR; p, n : AO.SIZE);
+		VAR i: AO.SIZE;
+	BEGIN
+		FOR i := 0 TO n - 1 DO
+			buf[p + i] := SHORT(CHR(ENTIER(randomgenerator.Uniform() * 256)))
+		END
+	END RandomBytes;
+
+	PROCEDURE NewRand* (bits : AO.SIZE; top, bottom : AO.SIGNED8): BigNumber;
+		VAR
+			n, len, i, topbit: AO.SIZE;
+			topword: SET;
+			b: BigNumber;
+	BEGIN
+		len := bits;
+		INC(len, ((-len)) MOD 32);
+		NEW(b); b.Init(len);
+		n := len DIV 32;
+		FOR i := 0 TO n - 1 DO
+			b.d[i] := AO.TOUNSIGNED32(randomgenerator.Integer())
+		END;
+		b.len := (bits + 31) DIV 32;
+		topbit := (bits - 1) MOD 32;
+		topword := AO.UBITS32(b.d[b.len - 1]) * (*CONV REMOVE SET32*)
+({0..topbit});
+		IF top > 0 THEN
+			INCL(topword, topbit)
+		END;
+		b.d[b.len - 1] := AO.TOUNSIGNED32(ORD(topword));
+		IF (bottom > 0) & ~ODD(AO.TOSIGNED32(b.d[0])) THEN
+			AO.UINC32(b.d[0])
+		END;
+		RETURN b
+	END NewRand;
+
+	PROCEDURE NewRandRange* (range : BigNumber): BigNumber;
+		VAR b: BigNumber;
+	BEGIN
+		b := NewRand(range.BitSize() - 1, SHORT(0), SHORT(0));
+		b.Dec;
+		RETURN b
+	END NewRandRange;
+
+	PROCEDURE h2i (c : SHORTCHAR): INTEGER;
+		VAR v: INTEGER;
+	BEGIN
+		CASE c OF
+			'0'..'9' :			v := ORD(c) - ORD('0')
+		|		 'a'..'f' :			v := ORD(c) - ORD('a') + 10
+		|		 'A'..'F' :			v := ORD(c) - ORD('A') + 10
+		ELSE
+			HALT(99)
+		END;
+		RETURN v
+	END h2i;
+
+	PROCEDURE AssignHex* (VAR b : BigNumber; IN hex : ARRAY OF SHORTCHAR; len : AO.SIZE);
+		VAR n, pos: AO.SIZE; w: BNdigit;
+	BEGIN
+		ASSERT(len <= LEN(hex) - 1);
+		NEW(b); b.Init(4 * len);
+		b.len := (4 * len + 31) DIV 32;
+		n := b.len - 1;
+		w := AO.TOUNSIGNED32(0);
+		pos := 0;
+		WHILE len > 0 DO
+			w := AO.UAdd32(AO.UMul32(w, AO.TOUNSIGNED32(16)), AO.TOUNSIGNED32(h2i(hex[pos])));
+			INC(pos);
+			DEC(len);
+			IF len MOD 8 = 0 THEN
+				b.d[n] := w;
+				w := AO.TOUNSIGNED32(0);
+				DEC(n)
+			END
+		END;
+		fixlen(b.d, b.len)
+	END AssignHex;
+
+	PROCEDURE AssignBin* (VAR b : BigNumber; IN buf : ARRAY OF SHORTCHAR; pos, len : AO.SIZE);
+		VAR n: AO.SIZE; w: BNdigit;
+	BEGIN
+		ASSERT((pos + len) <= LEN(buf));
+		NEW(b); b.Init(8 * len);
+		b.len := (8 * len + 31) DIV 32;
+		n := b.len - 1;
+		w := AO.TOUNSIGNED32(0);
+		WHILE len > 0 DO
+			w := AO.UAdd32(AO.UMul32(w, AO.TOUNSIGNED32(256)), AO.TOUNSIGNED32(ORD(buf[pos])));
+			INC(pos);
+			DEC(len);
+			IF len MOD 4 = 0 THEN
+				b.d[n] := w;
+				w := AO.TOUNSIGNED32(0);
+				DEC(n)
+			END
+		END;
+		fixlen(b.d, b.len)
+	END AssignBin;
+
+	PROCEDURE GetBinaryValue* (VAR b : BigNumber; VAR data : ARRAY OF SHORTCHAR; ofs : AO.SIZE);
+		VAR
+			j, n: AO.SIZE;
+			tmp: BNdigit;
+	BEGIN
+		ASSERT(LEN(data) >= 4 * b.len + ofs);
+		FOR n := b.len - 1 TO 0 BY (-1) DO
+			tmp := b.d[n];
+			FOR j := 3 TO 0 BY (-1) DO
+				data[ofs + j] := SHORT(CHR(AO.TOSIGNED32(AO.UMod32(tmp, AO.TOUNSIGNED32(256)))));
+				tmp := (AO.UDiv32(tmp, AO.TOUNSIGNED32(256)))
+			END;
+			INC(ofs, 4)
+		END
+	END GetBinaryValue;
+
+	PROCEDURE ModWord* (VAR a : BigNumber; b : BNdigit): BNdigit;
+		VAR
+			x: BNdigit;
+			td, sd, bd: digits;
+			tail, tl, sl, bl: AO.SIZE;
+			t2: dig2;
+	BEGIN
+		ASSERT(a # NIL);
+		td := GetBuffer();
+		sd := GetBuffer();
+		bd := GetBuffer();
+		bd[0] := b;
+		bl := 1;
+		td[0] := a.d[a.len - 1];
+		tl := 1;
+		tail := a.len - 1;
+		LOOP
+			IF tl > 1 THEN
+				t2[1] := td[1]
+			ELSE
+				t2[1] := AO.TOUNSIGNED32(0)
+			END;
+			t2[0] := td[0];
+			x := AO.TOUNSIGNED32(div64(t2, b));
+			IF AO.UNeq32(x, AO.TOUNSIGNED32(0)) THEN
+				muls(bd, x, sd, bl, sl);
+				WHILE (sl > tl) OR ((sl = tl) & (cmpd(sd, td, sl) > 0)) DO
+					sub(sd, bd, sd, sl, bl, sl);
+					AO.UDEC32(x)
+				END;
+				sub(td, sd, td, tl, sl, tl)
+			END;
+			IF tail <= 0 THEN
+				EXIT
+			END;
+			DEC(tail);
+			IF td[0] = AO.TOUNSIGNED32(0) THEN
+				tl := 1
+			ELSE
+				td[1] := td[0];
+				tl := 2
+			END;
+			td[0] := a.d[tail]
+		END;
+		x := td[0];
+		RecycleBuffer(td);
+		RecycleBuffer(sd);
+		RecycleBuffer(bd);
+		RETURN x
+	END ModWord;
+
+	PROCEDURE Div* (a, b : BigNumber): BigNumber;
+		VAR dummy, q: BigNumber;
+	BEGIN
+		Div2(a, b, q, dummy);
+		RETURN q
+	END Div;
+
+
+	PROCEDURE Exp* (a, b : BigNumber): BigNumber;
+		VAR
+			v: digits;
+			i, vl: AO.SIZE;
+			e: BigNumber;
+	BEGIN
+		NEW(e);e.Init(8192);
+		NEW(v, 256);
+		copy(a.d, v, a.len);
+		vl := a.len;
+		IF ODD(AO.TOSIGNED32(b.d[0])) THEN
+			copy(a.d, e.d, a.len);
+			e.len := a.len
+		ELSE
+			e.len := 1;
+			e.d[0] := AO.TOUNSIGNED32(1)
+		END;
+		FOR i := 1 TO b.BitSize() - 1 DO
+			mul(v, v, v, vl, vl, vl);
+			IF b.BitSet(i) THEN
+				mul(v, e.d, e.d, vl, e.len, e.len)
+			END
+		END;
+		fixlen(e.d, e.len);
+		RETURN e
+	END Exp;
+
+	PROCEDURE ModMul* (a, b, m : BigNumber): BigNumber;
+		VAR p, r: BigNumber;
+	BEGIN
+		p := Mul(a, b);
+		r := Mod(p, m);
+		RETURN r
+	END ModMul;
+
+	PROCEDURE wbits (exp : BigNumber): AO.SIZE;
+		VAR b, w: AO.SIZE;
+	BEGIN
+		b := exp.BitSize();
+		IF b <= 23 THEN
+			w := 1
+		ELSIF b <= 79 THEN
+			w := 3
+		ELSIF b <= 239 THEN
+			w := 4
+		ELSIF b <= 671 THEN
+			w := 5
+		ELSE
+			w := 6
+		END;
+		RETURN w
+	END wbits;
+
+	PROCEDURE ModExp* (a, b, m : BigNumber): BigNumber;
+		VAR
+			a0: ARRAY 32 OF BigNumber;
+			res, d: BigNumber;
+			wsize, v, wstart, e, i, j: AO.SIZE;
+			mg: Montgomery;
+	BEGIN
+		ASSERT((a # NIL) & (b # NIL) & (m # NIL));
+		IF b.IsZero() THEN
+			IF a.IsZero() THEN
+				HALT(100)
+			END;
+			AssignInt(res, 1);
+			RETURN res
+		END;
+		IF m.IsZero() THEN
+			HALT(101)
+		END;
+		IF m.neg THEN
+			HALT(102)
+		END;
+		NEW(mg); mg.Init(m);
+		a0[0] := Mod(a, m);
+		mg.Convert(a0[0]);
+		wsize := wbits(b);
+		IF wsize > 1 THEN
+			d := mg.Mult(a0[0], a0[0]);
+			j := ASH(1, wsize - 1);
+			FOR i := 1 TO j - 1 DO
+				a0[i] := mg.Mult(a0[i - 1], d)
+			END
+		END;
+		Copy(a0[0], res);
+		wstart := b.BitSize() - 2;
+		WHILE wstart >= 0 DO
+			res := mg.Mult(res, res);
+			IF b.BitSet(wstart) THEN
+				v := 1;
+				e := 0;
+				i := 1;
+				WHILE (i < wsize) & (wstart - i >= 0) DO
+					IF b.BitSet(wstart - i) THEN
+						v := ASH(v, i - e) + 1;
+						e := i
+					END;
+					INC(i)
+				END;
+				FOR i := 1 TO e DO
+					res := mg.Mult(res, res)
+				END;
+				res := mg.Mult(res, a0[v DIV 2]);
+				DEC(wstart, e + 1)
+			ELSE
+				DEC(wstart)
+			END
+		END;
+		mg.Reduce(res);
+		RETURN res
+	END ModExp;
+
+	PROCEDURE GCD* (a, b : BigNumber): BigNumber;
+		VAR x, y, r: BigNumber;
+	BEGIN
+		ASSERT(~a.neg & ~b.neg);
+		Copy(a, x);
+		Copy(b, y);
+		LOOP
+			IF Cmp(x, y) > 0 THEN
+				x := Mod(x, y);
+				IF x.IsZero() THEN
+					Copy(y, r);
+					EXIT
+				END
+			ELSE
+				y := Mod(y, x);
+				IF y.IsZero() THEN
+					Copy(x, r);
+					EXIT
+				END
+			END
+		END;
+		RETURN r
+	END GCD;
+
+	PROCEDURE TextWrite* (w : Streams.Writer; b : BigNumber);
+		VAR i: AO.SIZE;
+	BEGIN
+		IF b.neg THEN
+			w.Char("-")
+		END;
+		IF b.len = 0 THEN
+			w.String(" 00000000")
+		ELSE
+			i := b.len;
+			WHILE i > 0 DO
+				DEC(i);
+				w.Hex(AO.TOSIGNED64(AO.LONG32(b.d[i])), (-8));
+				IF i > 0 THEN
+					IF i MOD 6 = 0 THEN
+						w.Ln
+					ELSE
+						w.String("  ")
+					END
+				END
+			END
+		END;
+		w.Char('.')
+	END TextWrite;
+
+	PROCEDURE Print* (b : BigNumber);
+		VAR i: AO.SIZE;
+	BEGIN
+		IF b.neg THEN
+			Log.Char("-")
+		END;
+		IF b.len = 0 THEN
+			Log.String("00000000")
+		ELSE
+			i := b.len;
+			WHILE i > 0 DO
+				DEC(i);
+				AO.LogHex(AO.TOSIGNED32(b.d[i]), -8);
+				IF i > 0 THEN
+					IF i MOD 6 = 0 THEN
+						Log.Ln
+					ELSE
+						Log.String("  ")
+					END
+				END
+			END
+		END;
+		Log.Char('.');
+		Log.Ln
+	END Print;
+
+	PROCEDURE nibble (r : Streams.Reader): SHORTCHAR;
+		VAR c: SHORTCHAR;
+	BEGIN
+		REPEAT
+			REPEAT
+				r.Char(c)
+			UNTIL (c > ' ') OR (r.Available() = 0)
+		UNTIL (r.Available() = 0) OR (c >= '0') & (c <= '9') OR (c >= 'A') & (c <= 'F') OR (c >= 'a') & (c <= 'f') OR (c = '.');
+		RETURN c
+	END nibble;
+
+	PROCEDURE TextRead* (r : Streams.Reader; VAR b : BigNumber);
+		VAR
+			buf: ARRAY 2048 OF SHORTCHAR;
+			i: AO.SIZE;
+			n: SHORTCHAR;
+	BEGIN
+		i := 0;
+		n := nibble(r);
+		WHILE n # '.' DO
+			buf[i] := n;
+			INC(i);
+			n := nibble(r)
+		END;
+		AssignHex(b, buf, i)
+	END TextRead;
+
+	PROCEDURE FileRead* (r : Streams.Reader; VAR b : BigNumber);
+		VAR i, j, v: INTEGER;
+	BEGIN
+		r.RawLInt(j);
+		NEW(b); b.Init(32 * j);
+		b.len := j;
+		FOR i := 0 TO j - 1 DO
+			r.RawLInt(v);
+			b.d[i] := AO.TOUNSIGNED32(v)
+		END
+	END FileRead;
+
+	PROCEDURE FileWrite* (w : Streams.Writer; b : BigNumber);
+		VAR
+			i, j, v: INTEGER;
+	BEGIN
+		j := (b.len);
+		w.RawLInt(j);
+		FOR i := 0 TO j - 1 DO
+			w.RawLInt(v);
+			b.d[i] := AO.TOUNSIGNED32(v)
+		END
+	END FileWrite;
+
+BEGIN
+	ASSERT(ORD({0}) = 1);
+	FOR nextFreeBuffer := 0 TO BufferPoolSize - 1 DO
+		NEW(bufferPool[nextFreeBuffer], 256)
+	END;
+	nextFreeBuffer := BufferPoolSize - 1;
+	InitRandomgenerator()
+END CryptoAosBigNumbers.

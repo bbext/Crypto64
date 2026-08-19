@@ -1,0 +1,438 @@
+MODULE CryptoAosBIT;
+
+	(*
+		ETH Oberon,
+		Copyright 2001 ETH Zuerich Institut fuer Computersysteme, ETH Zentrum, CH-8092 Zuerich.
+		Refer to the "General ETH Oberon System Source License" contract available at: http://www.oberon.ethz.ch/
+		portable
+		tk 12.2.96
+		AUTHOR "tk"; PURPOSE "Bit manipulation";
+	*)
+
+	IMPORT S := SYSTEM, AO := CryptoAosCompat;
+
+	TYPE
+		SHORTCARD* = AO.SIGNED8;
+		CARDINAL* = AO.SIGNED16;
+		LONGCARD* = AO.SIGNED32;
+
+
+	CONST
+		rbo = FALSE;
+		risc = FALSE;
+
+	PROCEDURE CXOR* (x, y : SHORTCHAR): SHORTCHAR;
+	BEGIN
+		RETURN (*WARN CONV CAST*)SHORT(CHR(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(ORD(x))) / S.VAL(SET, LONG(ORD(y))))))
+	END CXOR;
+
+	PROCEDURE SXOR* (x, y : AO.SIGNED8): AO.SIGNED8;
+	BEGIN
+		RETURN SHORT(SHORT(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(x))) / S.VAL(SET, LONG(LONG(y))))))
+	END SXOR;
+
+	PROCEDURE IXOR* (x, y : AO.SIGNED16): AO.SIGNED16;
+	BEGIN
+		RETURN SHORT(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(x)) / S.VAL(SET, LONG(y))))
+	END IXOR;
+
+	PROCEDURE LXOR* (x, y : AO.SIGNED32): AO.SIGNED32;
+	BEGIN
+		RETURN S.VAL(AO.SIGNED32, S.VAL(SET, x) / S.VAL(SET, y))
+	END LXOR;
+
+	PROCEDURE COR* (x, y : SHORTCHAR): SHORTCHAR;
+	BEGIN
+		RETURN (*WARN CONV CAST*)SHORT(CHR(ORD(BITS(ORD(x)) + BITS(ORD(y)))))
+	END COR;
+
+	PROCEDURE SOR* (x, y : AO.SIGNED8): AO.SIGNED8;
+	BEGIN
+		RETURN SHORT(SHORT(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(x))) + S.VAL(SET, LONG(LONG(y))))))
+	END SOR;
+
+	PROCEDURE IOR* (x, y : AO.SIGNED16): AO.SIGNED16;
+	BEGIN
+		RETURN SHORT(ORD(BITS(x) + BITS(y)))
+	END IOR;
+
+	PROCEDURE LOR* (x, y : AO.SIGNED32): AO.SIGNED32;
+	BEGIN
+		RETURN S.VAL(AO.SIGNED32, S.VAL(SET, x) + S.VAL(SET, y))
+	END LOR;
+
+	PROCEDURE CAND* (x, y : SHORTCHAR): SHORTCHAR;
+	BEGIN
+		RETURN (*WARN CONV CAST*)SHORT(CHR(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(ORD(x))) * S.VAL(SET, LONG(ORD(y))))))
+	END CAND;
+
+	PROCEDURE SAND* (x, y : AO.SIGNED8): AO.SIGNED8;
+	BEGIN
+		RETURN SHORT(SHORT(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(x))) * S.VAL(SET, LONG(LONG(y))))))
+	END SAND;
+
+	PROCEDURE IAND* (x, y : AO.SIGNED16): AO.SIGNED16;
+	BEGIN
+		RETURN SHORT(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(x)) * S.VAL(SET, LONG(y))))
+	END IAND;
+
+	PROCEDURE LAND* (x, y : AO.SIGNED32): AO.SIGNED32;
+	BEGIN
+		RETURN S.VAL(AO.SIGNED32, S.VAL(SET, x) * S.VAL(SET, y))
+	END LAND;
+
+	PROCEDURE CLSH* (x : SHORTCHAR; n : AO.SIGNED8): SHORTCHAR;
+	BEGIN
+		IF risc THEN
+			RETURN (*WARN CONV CAST*)SHORT(CHR(S.LSH(ORD(BITS(ORD(x)) * BITS(0FFH)), n)))
+		ELSE
+			RETURN S.LSH(x, n)
+		END
+	END CLSH;
+
+	PROCEDURE SLSH* (x : AO.SIGNED8; n : AO.SIGNED8): AO.SIGNED8;
+	BEGIN
+		IF risc THEN
+			RETURN SHORT(SHORT(S.LSH(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(x))) * BITS(0FFH)), n)))
+		ELSE
+			RETURN S.LSH(x, n)
+		END
+	END SLSH;
+
+	PROCEDURE ILSH* (x : AO.SIGNED16; n : AO.SIGNED8): AO.SIGNED16;
+	BEGIN
+		IF risc THEN
+			RETURN SHORT(S.LSH(ORD(BITS(LONG(x)) * BITS(0FFFFH)), n))
+		ELSE
+			RETURN S.LSH(x, n)
+		END
+	END ILSH;
+
+	PROCEDURE LLSH* (x : AO.SIGNED32; n : AO.SIGNED8): AO.SIGNED32;
+	BEGIN
+		RETURN S.LSH(x, n)
+	END LLSH;
+
+	PROCEDURE CROT* (x : SHORTCHAR; n : AO.SIGNED8): SHORTCHAR;
+		VAR
+			s0, s1: SET;
+			i: AO.SIGNED16;
+	BEGIN
+		IF risc THEN
+			s0 := BITS(ORD(x));
+			s1 := {};
+			IF rbo THEN
+				i := (*WARN CONV CAST*)SHORT(0);
+				WHILE i < 8 DO
+					IF 31 - i IN s0 THEN
+						INCL(s1, 31 - ((i + n) MOD 8))
+					END;
+					INC(i)
+				END
+			ELSE
+				i := 0;
+				WHILE i < 8 DO
+					IF i IN s0 THEN
+						INCL(s1, (i + n) MOD 8)
+					END;
+					INC(i)
+				END
+			END;
+			RETURN (*WARN CONV CAST*)SHORT(CHR(ORD(s1)))
+		ELSE
+			RETURN S.ROT(x, n)
+		END
+	END CROT;
+
+	PROCEDURE SROT* (x : AO.SIGNED8; n : AO.SIGNED8): AO.SIGNED8;
+		VAR
+			s0, s1: SET;
+			i: AO.SIGNED16;
+	BEGIN
+		IF risc THEN
+			s0 := S.VAL(SET, LONG(LONG(x)));
+			s1 := {};
+			IF rbo THEN
+				i := (*WARN CONV CAST*)SHORT(0);
+				WHILE i < 8 DO
+					IF 31 - i IN s0 THEN
+						INCL(s1, 31 - ((i + n) MOD 8))
+					END;
+					INC(i)
+				END
+			ELSE
+				i := (*WARN CONV CAST*)SHORT(0);
+				WHILE i < 8 DO
+					IF i IN s0 THEN
+						INCL(s1, (i + n) MOD 8)
+					END;
+					INC(i)
+				END
+			END;
+			RETURN SHORT(SHORT(ORD(s1)))
+		ELSE
+			RETURN S.ROT(x, n)
+		END
+	END SROT;
+
+	PROCEDURE IROT* (x : AO.SIGNED16; n : AO.SIGNED8): AO.SIGNED16;
+		VAR
+			s0, s1: SET;
+			i: AO.SIGNED16;
+	BEGIN
+		IF risc THEN
+			s0 := BITS(x);
+			s1 := {};
+			IF rbo THEN
+				i := (*WARN CONV CAST*)SHORT(0);
+				WHILE i < 16 DO
+					IF 31 - i IN s0 THEN
+						INCL(s1, 31 - ((i + n) MOD 16))
+					END;
+					INC(i)
+				END
+			ELSE
+				i := (*WARN CONV CAST*)SHORT(0);
+				WHILE i < 16 DO
+					IF i IN s0 THEN
+						INCL(s1, (i + n) MOD 16)
+					END;
+					INC(i)
+				END
+			END;
+			RETURN SHORT(ORD(s1))
+		ELSE
+			RETURN S.ROT(x, n)
+		END
+	END IROT;
+
+	PROCEDURE LROT* (x : AO.SIGNED32; n : AO.SIGNED8): AO.SIGNED32;
+	BEGIN
+		RETURN S.ROT(x, n)
+	END LROT;
+
+	PROCEDURE ISWAP* (x : AO.SIGNED16): AO.SIGNED16;
+		TYPE
+			integer = ARRAY 2 OF SHORTCHAR;
+		VAR
+			a, b: integer;
+	BEGIN
+		a := S.VAL(integer, x);
+		b[0] := a[1];
+		b[1] := a[0];
+		RETURN S.VAL(AO.SIGNED16, b)
+	END ISWAP;
+
+	PROCEDURE LSWAP* (x : AO.SIGNED32): AO.SIGNED32;
+		TYPE
+			longint = ARRAY 4 OF SHORTCHAR;
+		VAR
+			a, b: longint;
+	BEGIN
+		a := S.VAL(longint, x);
+		b[0] := a[3];
+		b[1] := a[2];
+		b[2] := a[1];
+		b[3] := a[0];
+		RETURN S.VAL(AO.SIGNED32, b)
+	END LSWAP;
+
+	PROCEDURE CBIT* (x : SHORTCHAR; n : AO.SIGNED8): BOOLEAN;
+	BEGIN
+		ASSERT((n >= 0) & (n <= 7));
+		IF rbo THEN
+			RETURN (31 - n) IN BITS(ORD(x))
+		ELSE
+			RETURN n IN BITS(ORD(x))
+		END
+	END CBIT;
+
+	PROCEDURE BIT* (x : AO.SIGNED32; n : AO.SIGNED8): BOOLEAN;
+	BEGIN
+		ASSERT((n >= 0) & (n <= 31));
+		IF rbo THEN
+			RETURN (31 - n) IN S.VAL(SET, x)
+		ELSE
+			RETURN n IN S.VAL(SET, x)
+		END
+	END BIT;
+
+	PROCEDURE CSETBIT* (VAR x : SHORTCHAR; n : AO.SIGNED8);
+		VAR
+			i: AO.SIGNED32;
+	BEGIN
+		ASSERT((n >= 0) & (n <= 7));
+		i := ORD(x);
+		IF rbo THEN
+			INCL(S.VAL(SET, i), 31 - n)
+		ELSE
+			INCL(S.VAL(SET, i), n)
+		END;
+		x := (*WARN CONV CAST*)SHORT(CHR(i))
+	END CSETBIT;
+
+	PROCEDURE SSETBIT* (VAR x : AO.SIGNED8; n : AO.SIGNED8);
+		VAR
+			i: AO.SIGNED32;
+	BEGIN
+		ASSERT((n >= 0) & (n <= 7));
+		i := LONG(LONG(x));
+		IF rbo THEN
+			INCL(S.VAL(SET, i), 31 - n)
+		ELSE
+			INCL(S.VAL(SET, i), n)
+		END;
+		x := SHORT(SHORT(i))
+	END SSETBIT;
+
+	PROCEDURE ISETBIT* (VAR x : AO.SIGNED16; n : AO.SIGNED8);
+		VAR
+			i: AO.SIGNED32;
+	BEGIN
+		ASSERT((n >= 0) & (n <= 15));
+		i := LONG(x);
+		IF rbo THEN
+			INCL(S.VAL(SET, i), 31 - n)
+		ELSE
+			INCL(S.VAL(SET, i), n)
+		END;
+		x := SHORT(i)
+	END ISETBIT;
+
+	PROCEDURE LSETBIT* (VAR x : AO.SIGNED32; n : AO.SIGNED8);
+	BEGIN
+		ASSERT((n >= 0) & (n <= 31));
+		IF rbo THEN
+			INCL(S.VAL(SET, x), 31 - n)
+		ELSE
+			INCL(S.VAL(SET, x), n)
+		END
+	END LSETBIT;
+
+	PROCEDURE CCLRBIT* (VAR x : SHORTCHAR; n : AO.SIGNED8);
+		VAR
+			i: AO.SIGNED32;
+	BEGIN
+		ASSERT(ABS(n) < 8);
+		i := ORD(x);
+		IF rbo THEN
+			EXCL(S.VAL(SET, i), 31 - n)
+		ELSE
+			EXCL(S.VAL(SET, i), n)
+		END;
+		x := (*WARN CONV CAST*)SHORT(CHR(i))
+	END CCLRBIT;
+
+	PROCEDURE SCLRBIT* (VAR x : AO.SIGNED8; n : AO.SIGNED8);
+		VAR
+			i: AO.SIGNED32;
+	BEGIN
+		ASSERT(ABS(n) < 8);
+		i := LONG(LONG(x));
+		IF rbo THEN
+			EXCL(S.VAL(SET, i), 31 - n)
+		ELSE
+			EXCL(S.VAL(SET, i), n)
+		END;
+		x := SHORT(SHORT(i))
+	END SCLRBIT;
+
+	PROCEDURE ICLRBIT* (VAR x : AO.SIGNED16; n : AO.SIGNED8);
+		VAR
+			i: AO.SIGNED32;
+	BEGIN
+		ASSERT(ABS(n) < 16);
+		i := LONG(x);
+		IF rbo THEN
+			EXCL(S.VAL(SET, i), 31 - n)
+		ELSE
+			EXCL(S.VAL(SET, i), n)
+		END;
+		x := SHORT(i)
+	END ICLRBIT;
+
+	PROCEDURE LCLRBIT* (VAR x : AO.SIGNED32; n : AO.SIGNED8);
+	BEGIN
+		IF rbo THEN
+			EXCL(S.VAL(SET, x), 31 - n)
+		ELSE
+			EXCL(S.VAL(SET, x), n)
+		END
+	END LCLRBIT;
+
+	PROCEDURE SLESS* (x, y : SHORTCARD): BOOLEAN;
+	BEGIN
+		RETURN S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(x))) * BITS(0FFH)) < S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(y))) * BITS(0FFH))
+	END SLESS;
+
+	PROCEDURE ILESS* (x, y : CARDINAL): BOOLEAN;
+	BEGIN
+		RETURN ORD(BITS(LONG(x)) * BITS(0FFFFH)) < ORD(BITS(LONG(y)) * BITS(0FFFFH))
+	END ILESS;
+
+	PROCEDURE LLESS* (x, y : LONGCARD): BOOLEAN;
+		VAR
+			x0, y0: AO.SIGNED32;
+	BEGIN
+		x0 := S.LSH(x, (-1));
+		y0 := S.LSH(y, (-1));
+		IF x0 = y0 THEN
+			RETURN x MOD 2 < y MOD 2
+		ELSE
+			RETURN x0 < y0
+		END
+	END LLESS;
+
+	PROCEDURE SLESSEQ* (x, y : SHORTCARD): BOOLEAN;
+	BEGIN
+		RETURN S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(x))) * BITS(0FFH)) <= S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(y))) * BITS(0FFH))
+	END SLESSEQ;
+
+	PROCEDURE ILESSEQ* (x, y : CARDINAL): BOOLEAN;
+	BEGIN
+		RETURN ORD(BITS(LONG(x)) * BITS(0FFFFH)) <= ORD(BITS(LONG(y)) * BITS(0FFFFH))
+	END ILESSEQ;
+
+	PROCEDURE LLESSEQ* (x, y : LONGCARD): BOOLEAN;
+		VAR
+			x0, y0: AO.SIGNED32;
+	BEGIN
+		x0 := S.LSH(x, (-1));
+		y0 := S.LSH(y, (-1));
+		IF x0 = y0 THEN
+			RETURN x MOD 2 <= y MOD 2
+		ELSE
+			RETURN x0 <= y0
+		END
+	END LLESSEQ;
+
+	PROCEDURE SDIV* (x, y : SHORTCARD): SHORTCARD;
+	BEGIN
+		RETURN SHORT(SHORT(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(LONG(x))) * BITS(0FFH)) DIV y))
+	END SDIV;
+
+	PROCEDURE IDIV* (x, y : CARDINAL): CARDINAL;
+	BEGIN
+		RETURN SHORT(S.VAL(AO.SIGNED32, S.VAL(SET, LONG(x)) * BITS(0FFFFH)) DIV y)
+	END IDIV;
+
+	PROCEDURE LDIV* (x, y : LONGCARD): LONGCARD;
+		CONST
+			m = 4.294967296E9;
+		VAR
+			x0, y0: AO.FLOAT64;
+	BEGIN
+		IF x < 0 THEN
+			x0 := (m - x)
+		ELSE
+			x0 := (x)
+		END;
+		IF y < 0 THEN
+			y0 := (m - y)
+		ELSE
+			y0 := LONG(y)
+		END;
+		RETURN SHORT(ENTIER(x0 / y0))
+	END LDIV;
+
+END CryptoAosBIT.

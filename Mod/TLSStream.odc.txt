@@ -1,0 +1,101 @@
+MODULE CryptoTLSStream;(* AUTHOR "Anton Shelin" *)
+
+	IMPORT CommStreams, TCP := CryptoAosTCP, CryptoTLS, SYSTEM, StdLog;
+
+	CONST
+		Trace = FALSE;
+		protocol = "CryptoTLSStream";
+
+	TYPE 
+		Bytes = ARRAY OF SHORTCHAR;
+		TLSStream = POINTER TO RECORD(CommStreams.Stream) 
+			tls : CryptoTLS.Connection;
+		END;
+		TLSListener = POINTER TO RECORD(CommStreams.Listener) 
+			tls : CryptoTLS.Connection;
+		END;
+		
+		
+	PROCEDURE (l: TLSListener) Accept (OUT s: CommStreams.Stream);
+		VAR client : TCP.Connection;res: INTEGER;ts:TLSStream;
+	BEGIN
+		l.tls.Accept (client, res);
+		IF res # 0 THEN
+			client := NIL;
+		ELSE
+			WITH client: CryptoTLS.Connection DO 
+				NEW(ts); 
+				ts.tls := client;
+				s := ts;
+			END
+		END;
+	END Accept;
+	
+	PROCEDURE (l: TLSListener) Close;
+	BEGIN
+		l.tls.Close;
+	END Close;
+	
+	PROCEDURE (l: TLSListener) LocalAdr (): CommStreams.Adr;
+	BEGIN
+		RETURN l.tls.localAdr;
+	END LocalAdr;
+
+	PROCEDURE (s: TLSStream) Close;
+	BEGIN
+		s.tls.Close();
+	END Close;
+	
+	PROCEDURE (s: TLSStream) IsConnected (): BOOLEAN;
+	BEGIN
+		RETURN s.tls.IsConnected();
+	END IsConnected;
+	
+	PROCEDURE (s: TLSStream) ReadBytes (VAR x: ARRAY OF BYTE; beg, len: INTEGER;
+												OUT read: INTEGER);
+		VAR res : INTEGER;
+	BEGIN
+		s.tls.Receive(SYSTEM.VAL(Bytes,x), beg, len, 1, read, res);
+	END ReadBytes;
+	
+	PROCEDURE (s: TLSStream) RemoteAdr (): CommStreams.Adr;
+	BEGIN
+		RETURN s.tls.remoteAdr;
+	END RemoteAdr;
+	
+	PROCEDURE (s: TLSStream) WriteBytes (IN x: ARRAY OF BYTE; beg, len: INTEGER;
+												OUT written: INTEGER);
+		VAR res : INTEGER;
+	BEGIN
+		s.tls.Send(SYSTEM.VAL(Bytes,x), beg, len, TRUE, res);
+		written := len;
+	END WriteBytes;
+	
+	
+	PROCEDURE NewStream* (localAdr, remoteAdr: ARRAY OF CHAR; OUT s: CommStreams.Stream; OUT res: INTEGER);
+		VAR conn : TLSStream;
+		host: ARRAY 128 OF SHORTCHAR;
+        path: ARRAY 256 OF SHORTCHAR;
+        port: INTEGER;
+	BEGIN
+		IF Trace THEN
+			StdLog.String("TLS NewStream " + remoteAdr);StdLog.Ln;
+		END;
+		NEW(conn); 
+		NEW(conn.tls); 
+		conn.tls.Init();
+		conn.tls.Open("0.0.0.0:0", remoteAdr, res);
+		ASSERT(res = 0);
+		s := conn;
+	END NewStream;
+	
+	PROCEDURE NewListener* (localAdr: ARRAY OF CHAR; OUT l: CommStreams.Listener; OUT res: INTEGER);
+		VAR tl : TLSListener;
+	BEGIN
+		NEW(tl);
+		tl.tls := CryptoTLS.GetConnection();
+		tl.tls.Open(localAdr, "", res);
+		l := tl;
+	END NewListener;
+
+END CryptoTLSStream.

@@ -1,0 +1,242 @@
+MODULE CryptoBase64; (** AUTHOR "g.f."; PURPOSE  "Base 64 encoding according to RFC1421"; *)
+
+	IMPORT Streams := CryptoAosStreams, AO := CryptoAosCompat;
+
+	VAR
+		etab: ARRAY 64 OF SHORTCHAR;
+		dtab: ARRAY 128 OF AO.SIGNED16;
+
+	PROCEDURE Encode* (IN image : ARRAY OF SHORTCHAR; len : AO.SIZE; VAR b64 : ARRAY OF SHORTCHAR);
+		VAR
+			group, i, ix, ox: AO.SIGNED32;
+
+
+	BEGIN
+		group := 0;
+		i := 0;
+		ix := 0;
+		ox := 0;
+		WHILE ix < len DO
+			group := group * 100H + ORD(image[ix]);
+			INC(ix);
+			INC(i);
+			IF i = 3 THEN
+				b64[ox] := etab[group DIV 40000H MOD 64];
+				b64[ox + 1] := etab[group DIV 1000H MOD 64];
+				b64[ox + 2] := etab[group DIV 40H MOD 64];
+				b64[ox + 3] := etab[group MOD 64];
+				INC(ox, 4);
+				group := 0;
+				i := 0
+			END
+		END;
+		IF i > 0 THEN
+			IF i = 1 THEN
+				group := group * 256
+			END;
+			b64[ox] := etab[group DIV 400H MOD 64];
+			b64[ox + 1] := etab[group DIV 10H MOD 64];
+			IF i = 1 THEN
+				b64[ox + 2] := '='
+			ELSE
+				b64[ox + 2] := etab[group * 4 MOD 64]
+			END;
+			b64[ox + 3] := '=';
+			INC(ox, 4)
+		END;
+		b64[ox] := 0X
+	END Encode;
+
+	PROCEDURE Decode* (IN b64 : ARRAY OF SHORTCHAR; VAR image : ARRAY OF SHORTCHAR): AO.SIGNED32;
+		VAR
+			i, d, code, group, ix, len: AO.SIGNED32;
+			c: SHORTCHAR;
+
+
+	BEGIN
+		len := 0;
+		ix := 0;
+		group := 0;
+		i := 0;
+		REPEAT
+			c := b64[ix];
+			INC(ix)
+		UNTIL (c > ' ') OR (c = 0X);
+		code := (*WARN CONV CAST*)LONG(dtab[ORD(c)]);
+		WHILE code >= 0 DO
+			group := group * 64 + code;
+			INC(i);
+			IF i = 4 THEN
+				image[len] := (*WARN CONV CAST*)SHORT(CHR(group DIV 10000H MOD 100H));
+				INC(len);
+				image[len] := (*WARN CONV CAST*)SHORT(CHR(group DIV 100H MOD 100H));
+				INC(len);
+				image[len] := (*WARN CONV CAST*)SHORT(CHR(group MOD 100H));
+				INC(len);
+				group := 0;
+				i := 0
+			END;
+			REPEAT
+				c := b64[ix];
+				INC(ix)
+			UNTIL (c > ' ') OR (c = 0X);
+			code := (*WARN CONV CAST*)LONG(dtab[ORD(c)])
+		END;
+		IF c = '=' THEN
+			IF i < 2 THEN
+				RETURN (-1)
+			END;
+			group := group * 64;
+			d := 1;
+			c := b64[ix];
+			IF c = '=' THEN
+				group := group * 64;
+				d := 2
+			END;
+			image[len] := (*WARN CONV CAST*)SHORT(CHR(group DIV 10000H));
+			INC(len);
+			IF d = 1 THEN
+				image[len] := (*WARN CONV CAST*)SHORT(CHR(group DIV 100H MOD 100H));
+				INC(len)
+			END
+		ELSIF i > 0 THEN
+			RETURN (-1)
+		END;
+		RETURN len
+	END Decode;
+
+	PROCEDURE EncodeStream* (IN image : ARRAY OF SHORTCHAR; len : AO.SIGNED32; w : Streams.Writer);
+		VAR
+			group, i, ix, ll: AO.SIGNED32;
+
+
+	BEGIN
+		group := 0;
+		i := 0;
+		ix := 0;
+		ll := 0;
+		WHILE ix < len DO
+			group := group * 100H + ORD(image[ix]);
+			INC(ix);
+			INC(i);
+			IF i = 3 THEN
+				w.Char(etab[group DIV 40000H MOD 64]);
+				w.Char(etab[group DIV 1000H MOD 64]);
+				w.Char(etab[group DIV 40H MOD 64]);
+				w.Char(etab[group MOD 64]);
+				INC(ll, 4);
+				IF ll >= 72 THEN
+					w.Ln;
+					ll := 0
+				END;
+				group := 0;
+				i := 0
+			END
+		END;
+		IF i > 0 THEN
+			IF i = 1 THEN
+				group := group * 100H
+			END;
+			w.Char(etab[group DIV 400H MOD 64]);
+			w.Char(etab[group DIV 10H MOD 64]);
+			IF i = 1 THEN
+				w.Char('=')
+			ELSE
+				w.Char(etab[group * 4 MOD 64])
+			END;
+			w.Char('=')
+		END;
+		w.Update
+	END EncodeStream;
+
+	PROCEDURE DecodeStream* (r : Streams.Reader; VAR image : ARRAY OF SHORTCHAR): AO.SIGNED32;
+		VAR
+			i, rest, code, group, len: AO.SIGNED32;
+			c: SHORTCHAR;
+
+
+	BEGIN
+		len := 0;
+		group := 0;
+		i := 0;
+		REPEAT
+			r.Char(c)
+		UNTIL (c > ' ') OR (c = 0X);
+		code := (*WARN CONV CAST*)LONG(dtab[ORD(c)]);
+		WHILE code >= 0 DO
+			group := group * 64 + code;
+			INC(i);
+			IF i = 4 THEN
+				image[len] := (*WARN CONV CAST*)SHORT(CHR(group DIV 10000H MOD 100H));
+				INC(len);
+				image[len] := (*WARN CONV CAST*)SHORT(CHR(group DIV 100H MOD 100H));
+				INC(len);
+				image[len] := (*WARN CONV CAST*)SHORT(CHR(group MOD 100H));
+				INC(len);
+				group := 0;
+				i := 0
+			END;
+			REPEAT
+				r.Char(c)
+			UNTIL (c > ' ') OR (c = 0X);
+			code := (*WARN CONV CAST*)LONG(dtab[ORD(c)])
+		END;
+		IF c = '=' THEN
+			IF i < 2 THEN
+				RETURN (-1)
+			END;
+			group := group * 64;
+			rest := 2;
+			r.Char(c);
+			IF c = '=' THEN
+				group := group * 64;
+				rest := 1
+			END;
+			image[len] := (*WARN CONV CAST*)SHORT(CHR(group DIV 10000H));
+			INC(len);
+			IF rest = 2 THEN
+				image[len] := (*WARN CONV CAST*)SHORT(CHR(group DIV 100H MOD 100H));
+				INC(len)
+			END
+		ELSIF i > 0 THEN
+			RETURN (-1)
+		END;
+		RETURN len
+	END DecodeStream;
+
+	PROCEDURE InitTables ;
+		CONST
+			letters = 26;
+			digits = 10;
+
+		VAR
+			i, j: AO.SIGNED16;
+
+
+	BEGIN
+		j := (*WARN CONV CAST*)SHORT(0);
+		FOR i := 0 TO letters - 1 DO
+			etab[j] := (*WARN CONV CAST*)SHORT(CHR(i + ORD("A")));
+			INC(j)
+		END;
+		FOR i := 0 TO letters - 1 DO
+			etab[j] := (*WARN CONV CAST*)SHORT(CHR(i + ORD("a")));
+			INC(j)
+		END;
+		FOR i := 0 TO digits - 1 DO
+			etab[j] := (*WARN CONV CAST*)SHORT(CHR(i + ORD("0")));
+			INC(j)
+		END;
+		etab[62] := "+";
+		etab[63] := "/";
+		FOR i := 0 TO 127 DO
+			dtab[i] := (*WARN CONV CAST*)SHORT((-1))
+		END;
+		FOR i := 0 TO 63 DO
+			dtab[ORD(etab[i])] := i
+		END
+	END InitTables;
+
+BEGIN
+	InitTables()
+END CryptoBase64.

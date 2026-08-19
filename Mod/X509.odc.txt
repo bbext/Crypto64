@@ -1,0 +1,519 @@
+MODULE CryptoX509;
+(**
+	X.509 Certificates and certificate management.
+	See RFC5280 standard.
+	Written by Timothée Martiel, 2014, with some fragments by P. Hunziker.
+*)
+
+	IMPORT Streams := CryptoAosStreams, Dates := CryptoAosDates, AosBigNumbers := CryptoAosBigNumbers, CryptoRSA, ASN1 := CryptoASN1, (*CONV FROM KernelLog*)
+StdLog, AO := CryptoAosCompat;
+
+	CONST
+		Trace = TRUE;
+		AllowNotTrusted* = 0;
+		AllowOutdated* = 1;
+		Bypass* = 31;
+
+	TYPE
+				StdLogSender = POINTER TO RECORD(Streams.Sender) END;
+		Entity* = EXTENSIBLE RECORD
+			country-, organisation-, organisationUnit-, distName-, state-, commonName- : POINTER TO ARRAY OF SHORTCHAR;
+			serial- : AO.SIGNED32
+		END;
+		Certificate* = POINTER TO EXTENSIBLE RECORD
+			version-, serial- : AO.SIGNED32;
+			algorithm- : POINTER TO ARRAY OF SHORTCHAR;
+			validity- : EXTENSIBLE RECORD
+				notBefore-, notAfter- : Dates.DateTime
+			END;
+			identifier- : POINTER TO ARRAY OF SHORTCHAR;
+			publicKey- : CryptoRSA.Key;
+			issuer-, subject- : Entity;
+			parent-, next : Certificate
+		END;
+
+
+	VAR
+		roots: Certificate;
+
+		PROCEDURE (SELF: StdLogSender) Send* (IN buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE; propagate : BOOLEAN; VAR res : INTEGER);
+			VAR arr : POINTER TO ARRAY OF CHAR; i : INTEGER;
+		BEGIN 
+			NEW(arr, len);
+			FOR i:= 0 TO len - 1 DO
+				arr[i] := buf[ofs+i]
+			END;
+			StdLog.String(arr);
+			res := Streams.Ok;
+		END Send;
+
+	PROCEDURE Verify* (chain : Certificate; flags : SET): BOOLEAN;
+		VAR
+			valid: BOOLEAN;
+
+
+		PROCEDURE CheckDate (c : Certificate): BOOLEAN;
+			VAR
+				now: Dates.DateTime;
+
+
+		BEGIN
+			IF AllowOutdated IN flags THEN
+				RETURN TRUE
+			END;
+			now := Dates.Now();
+			RETURN (Dates.CompareDateTime(c.validity.notBefore, now) <= 0) & (Dates.CompareDateTime(now, c.validity.notAfter) <= 0)
+		END CheckDate;
+
+		PROCEDURE CheckSignature (c : Certificate): BOOLEAN;
+				BEGIN
+					RETURN TRUE;
+		END CheckSignature;
+
+	BEGIN
+		IF Bypass IN flags THEN
+			RETURN TRUE
+		END;
+		valid := CheckDate(chain) & CheckSignature(chain);
+		RETURN valid
+	END Verify;
+
+	PROCEDURE FormatEntity (triplet : ASN1.Triplet; VAR entity : Entity);
+		CONST
+			Country = 1;
+			Org = 2;
+			OrgUnit = 3;
+			DistNameQual = 4;
+			State = 5;
+			CommonName = 6;
+			Serial = 7;
+		VAR
+			data, key, value: ASN1.Triplet;
+			currentData: AO.SIGNED32;
+	BEGIN
+				currentData := 0;
+		data := triplet.child;
+		WHILE data # NIL DO
+			key := data.child;
+			WHILE key # NIL DO
+				value := key.child;
+				WHILE value # NIL DO
+					IF currentData # 0 THEN
+						CASE currentData OF
+							Country :					       entity.country := value.svalue
+						|       Org :					   entity.organisation := value.svalue
+						|       OrgUnit :					       entity.organisationUnit := value.svalue
+						|       DistNameQual :					  entity.distName := value.svalue
+						|       State :						 entity.state := value.svalue
+						|       CommonName :					    entity.commonName := value.svalue
+						END;
+						currentData := 0
+					ELSIF (value.svalue[0] = 55X) & (value.svalue[1] = 4X) & (value.svalue[2] = 6X) THEN
+						currentData := Country
+					ELSIF (value.svalue[0] = 55X) & (value.svalue[1] = 4X) & (value.svalue[2] = 8X) THEN
+						currentData := State
+					ELSIF (value.svalue[0] = 55X) & (value.svalue[1] = 4X) & (value.svalue[2] = 0AX) THEN
+						currentData := Org
+					ELSIF (value.svalue[0] = 55X) & (value.svalue[1] = 4X) & (value.svalue[2] = 0BX) THEN
+						currentData := OrgUnit
+					ELSIF (value.svalue[0] = 55X) & (value.svalue[1] = 4X) & (value.svalue[2] = 3X) THEN
+						currentData := CommonName
+					END;
+					value := value.next
+				END;
+				key := key.next
+			END;
+			data := data.next
+		END
+	END FormatEntity;
+
+
+	PROCEDURE IsDigit (char : SHORTCHAR): BOOLEAN;
+	BEGIN
+		IF (ORD(char) < ORD('0')) OR (ORD(char) > ORD('9')) THEN
+			RETURN FALSE
+		ELSE
+			RETURN TRUE
+		END
+	END IsDigit;
+
+	PROCEDURE ReadUTCTime (reader : Streams.Reader; VAR date : Dates.DateTime): BOOLEAN;
+		VAR
+			char: SHORTCHAR;
+	BEGIN
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.year := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.year, ORD(char) - ORD('0'));
+		IF date.year >= 50 THEN
+			INC(date.year, 1900)
+		ELSE
+			INC(date.year, 2000)
+		END;
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.month := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.month, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.day := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.day, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.hour := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.hour, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.minute := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.minute, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.second := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.second, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF char # 'Z' THEN
+			RETURN FALSE
+		ELSE
+			RETURN TRUE
+		END
+	END ReadUTCTime;
+
+	PROCEDURE ReadGeneralizedTime (reader : Streams.Reader; VAR date : Dates.DateTime): BOOLEAN;
+		VAR
+			char: SHORTCHAR;
+	BEGIN
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.year := 1000 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.year, 100 * ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.year, 10 * ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.year, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.month := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.month, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.day := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.day, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.hour := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.hour, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.minute := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.minute, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		date.second := 10 * (ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF ~IsDigit(char) THEN
+			RETURN FALSE
+		END;
+		INC(date.second, ORD(char) - ORD('0'));
+		char := reader.Get();
+		IF char # 'Z' THEN
+			RETURN FALSE
+		ELSE
+			RETURN TRUE
+		END
+	END ReadGeneralizedTime;
+
+	PROCEDURE ReadTime (reader : Streams.Reader; VAR date : Dates.DateTime): BOOLEAN;
+		VAR pos: AO.SIGNED32; res: BOOLEAN;
+	BEGIN
+		res := ReadUTCTime(reader, date);
+		IF ~res THEN
+			res := ReadGeneralizedTime(reader, date);
+			RETURN res
+		END;
+		RETURN TRUE
+	END ReadTime;
+
+	PROCEDURE FormatRsaPublicKey* (publicKey : ASN1.Triplet; VAR key : CryptoRSA.Key);
+		VAR
+			algo: POINTER TO ARRAY OF SHORTCHAR;
+			sequence, mod, exp: ASN1.Triplet;
+			sr: Streams.StringReader;
+			len0: AO.SIZE;
+			modulus, exponent: AosBigNumbers.BigNumber;
+	BEGIN
+		algo := publicKey.child.child.svalue;
+		NEW(sr);sr.InitStringReader(LEN(publicKey.child.next.svalue^));
+		sr.SetRaw(publicKey.child.next.svalue^, 0, LEN(publicKey.child.next.svalue^));
+		sequence := ASN1.Decode(sr, publicKey.child.next.level + 1, len0);
+		mod := sequence.child;
+		AosBigNumbers.AssignBin(modulus, mod.svalue^, 0, LEN(mod.svalue^));
+		exp := mod.next;
+		IF exp.ivalue # 0 THEN
+			AosBigNumbers.AssignInt(exponent, exp.ivalue)
+		ELSE
+			AosBigNumbers.AssignBin(exponent, exp.svalue^, 0, LEN(exp.svalue^))
+		END;
+		key := CryptoRSA.PubKey(exponent, modulus)
+	END FormatRsaPublicKey;
+
+	PROCEDURE PrintEntity (IN entity : Entity; writer : Streams.Writer);
+	BEGIN
+		IF entity.country # NIL THEN
+			writer.String(" country:	");
+			writer.Bytes(entity.country^, 0, LEN(entity.country));
+			writer.Ln
+		END;
+		IF entity.organisation # NIL THEN
+			writer.String(" organisation:   ");
+			writer.Bytes(entity.organisation^, 0, LEN(entity.organisation));
+			writer.Ln
+		END;
+		IF entity.organisationUnit # NIL THEN
+			writer.String(" organisation unit:      ");
+			writer.Bytes(entity.organisationUnit^, 0, LEN(entity.organisationUnit));
+			writer.Ln
+		END;
+		IF entity.distName # NIL THEN
+			writer.String(" distinguished name:     ");
+			writer.Bytes(entity.distName^, 0, LEN(entity.distName));
+			writer.Ln
+		END;
+		IF entity.state # NIL THEN
+			writer.String(" state:  ");
+			writer.Bytes(entity.state^, 0, LEN(entity.state));
+			writer.Ln
+		END;
+		IF entity.commonName # NIL THEN
+			writer.String(" common name:    ");
+			writer.Bytes(entity.commonName^, 0, LEN(entity.commonName));
+			writer.Ln
+		END
+	END PrintEntity;
+
+	PROCEDURE PrintDate (date : Dates.DateTime; writer : Streams.Writer);
+	BEGIN
+		writer.Int(date.year, 0);
+		writer.String('/');
+		writer.Int(date.month, 0);
+		writer.String('/');
+		writer.Int(date.day, 0);
+		writer.String(" ");
+		writer.Int(date.hour, 0);
+		writer.String(":");
+		writer.Int(date.minute, 0);
+		writer.String(":");
+		writer.Int(date.second, 0)
+	END PrintDate;
+
+	PROCEDURE PrintCertificate* (certificate : Certificate; writer : Streams.Writer);
+		VAR
+			count: AO.SIZE;
+			mod: ARRAY 16 * 4096 OF SHORTCHAR;
+
+
+	BEGIN
+		writer.String("== Begin of Certificate ==");
+		writer.Ln;
+		writer.String("version: ");
+		writer.Int(certificate.version, 0);
+		writer.Ln;
+		writer.String("serial:  ");
+		writer.Int(certificate.serial, 0);
+		writer.Ln;
+		writer.String("signature:");
+		writer.Ln;
+		writer.String(" algorithm:      ");
+		FOR count := 0 TO LEN(certificate.algorithm) - 1 DO
+			writer.Hex(ORD(certificate.algorithm[count]), (-2));
+			writer.String(" ")
+		END;
+		writer.Ln;
+		writer.String("Issuer:");
+		writer.Ln;
+		PrintEntity(certificate.issuer, writer);
+		writer.String("validity:");
+		writer.Ln;
+		writer.String(" not before:     ");
+		PrintDate(certificate.validity.notBefore, writer);
+		writer.Ln;
+		writer.String(" not after:      ");
+		PrintDate(certificate.validity.notAfter, writer);
+		writer.Ln;
+		writer.String("Subject:");
+		writer.Ln;
+		PrintEntity(certificate.subject, writer);
+		writer.String("RSA public key:");
+		writer.Ln;
+		writer.String(" modulus:	");
+		AosBigNumbers.TextWrite(writer, certificate.publicKey.modulus);
+		writer.Ln;
+		writer.String(" exponent:       ");
+		AosBigNumbers.TextWrite(writer, certificate.publicKey.exponent);
+		writer.Ln;
+		writer.String("== End of Certificate ==");
+		writer.Ln
+	END PrintCertificate;
+
+	PROCEDURE Read* (reader : Streams.Reader): Certificate;
+		CONST
+			TimeLength = 15;
+		VAR
+			c: Certificate;
+			res: BOOLEAN;
+			root, segment, data: ASN1.Triplet;
+			length: AO.SIZE;
+			r: Streams.StringReader;
+			writer: Streams.Writer;
+						stdLogSender : StdLogSender;
+	BEGIN
+				NEW(stdLogSender);
+		NEW(c);
+		root := ASN1.Decode(reader, 0, length);
+		segment := root.child;
+		data := segment.child;
+		IF (data.next.tag = ASN1.Integer) THEN
+			IF data.tag = ASN1.Integer THEN
+				c.version := data.ivalue + 1
+			ELSE
+				c.version := ORD(data.svalue[0])
+			END;
+			data := data.next
+		ELSE
+			c.version := 1
+		END;
+		c.serial := data.ivalue;
+		data := data.next;
+		c.algorithm := data.child.svalue;
+		data := data.next;
+		FormatEntity(data, c.issuer);
+		data := data.next;
+		NEW(r); r.InitStringReader(TimeLength);
+		r.SetRaw(data.child.svalue^, 0, LEN(data.child.svalue^));
+		res := ReadTime(r, c.validity.notBefore);
+		r.SetRaw(data.child.next.svalue^, 0, LEN(data.child.next.svalue^));
+		r.SetPos(0);
+		res := ReadTime(r, c.validity.notAfter);
+		data := data.next;
+		FormatEntity(data, c.subject);
+		data := data.next;
+		FormatRsaPublicKey(data, c.publicKey);
+		IF c.version > 2 THEN
+			data := data.next
+		END;
+		segment := segment.next;
+		segment := segment.next;
+		IF Trace THEN
+			StdLog.String("========== Read X509 Certificate =========");
+			StdLog.Ln;
+			Streams.OpenWriter(writer, stdLogSender);
+			PrintCertificate(c, writer);
+			StdLog.String("========== End X509 Certificate =========");
+			StdLog.Ln
+		END;
+		RETURN c
+	END Read;
+
+	PROCEDURE Write* (writer : Streams.Writer; cert : Certificate);
+	END Write;
+
+	PROCEDURE AddToTrusted* (certificate : Certificate);
+
+	BEGIN
+(*WARN CONV NOT SUPPORTED: {EXCLUSIVE}*)
+		certificate.next := roots;
+		roots := certificate
+	END AddToTrusted;
+
+
+	PROCEDURE WriteUTCTime (writer : Streams.Writer; date : Dates.DateTime);
+	BEGIN
+	END WriteUTCTime;
+
+	PROCEDURE WriteGeneralizedTime (writer : Streams.Writer; date : Dates.DateTime);
+	BEGIN
+		writer.Int(date.year, 4);
+		writer.Int(date.month, 2);
+		writer.Int(date.day, 2);
+		writer.Char('Z')
+	END WriteGeneralizedTime;
+
+	PROCEDURE Check (b : BOOLEAN);
+	BEGIN
+		ASSERT(b)
+	END Check;
+
+END CryptoX509.

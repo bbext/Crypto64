@@ -1,0 +1,136 @@
+MODULE CryptoAosCommStreams;
+
+	(**
+	AUTHOR: Shelin Anton, 2023
+	PURPOSE: BB CommStreams aos wrapper
+	
+		<odc-view type="StdStamps.StdView" w="1301668" h="150803" data="gvFTdGRTdGFtcHMuU3RkVmlld0Rlc2MA8VZpZXdzLlZpZXdEZXNjAPBTdG9yZXMuU3RvcmVEZXNjAAAAAAAAAAAAAAAAACUAAAAAAAICAADbgqUFAAAAQEgLAAkBAABc8KAZBAAAAD9ICwChAAAA"/>
+		
+	*)
+	
+	IMPORT Streams := CryptoAosStreams, SYSTEM, AO := CryptoAosCompat, CommStreams, Services;
+
+	CONST
+		WriteError = 2907;
+		DefaultWriterSize = 4096;
+		DefaultReaderSize = 4096;
+		DefaultReadTimeoutSeconds = 100;
+
+	TYPE
+		Bytes = ARRAY OF BYTE;
+		(** Reader for buffered reading of a stream via Streams.Read* procedures.  See OpenReader. *)
+		Reader* = POINTER TO RECORD (Streams.Reader)
+			s: CommStreams.Stream;
+			readTimeoutSeconds: INTEGER;
+		END;
+		ReaderReceiver = POINTER TO RECORD(Streams.Receiver) reader: Reader END;
+		(** Writer for buffered writing of a stream via Streams.Write* procedures.  See OpenWriter. *)
+		Writer* = POINTER TO RECORD (Streams.Writer)	(** not sharable between multiple processes *)
+			s: CommStreams.Stream;
+		END;
+		WriterSender = POINTER TO RECORD(Streams.Sender) writer: Writer END;
+
+	PROCEDURE (SELF: Reader) Receive (VAR buf: ARRAY OF SHORTCHAR; ofs, size, min: AO.SIZE; VAR len: AO.SIZE; VAR res: INTEGER), NEW;
+		VAR time: LONGINT;
+	BEGIN
+		time := Services.Ticks();
+		len := 0;
+		WHILE SELF.s.IsConnected() & (len = 0) & ((Services.Ticks() - time) < (Services.resolution * SELF.readTimeoutSeconds)) DO
+			SELF.s.ReadBytes(SYSTEM.VAL(Bytes, buf), ofs, size, len);
+		END;
+		IF len >= min THEN res := Streams.Ok ELSE res := Streams.EOF (* end of file *) END
+	END Receive;
+
+	PROCEDURE (SELF: Reader) CanSetPos* (): BOOLEAN;
+	BEGIN
+		RETURN FALSE;
+	END CanSetPos;
+
+	PROCEDURE (SELF: Reader) SetPos* (pos: Streams.Position);
+	BEGIN
+		HALT(123)
+	END SetPos;
+
+	PROCEDURE (SELF: ReaderReceiver) Receive (VAR buf: ARRAY OF SHORTCHAR; ofs, size, min: AO.SIZE; VAR len: AO.SIZE; VAR res: INTEGER);
+	BEGIN
+		SELF.reader.Receive(buf, ofs, size, min, len, res);
+	END Receive;
+
+	PROCEDURE (SELF: Reader) InitStreamReader* (s: CommStreams.Stream; pos: Streams.Position), NEW;
+		VAR rr: ReaderReceiver;
+	BEGIN
+		ASSERT(s # NIL);
+		ASSERT(pos = 0);
+		SELF.s := s;
+		SELF.readTimeoutSeconds := DefaultReadTimeoutSeconds;
+		NEW(rr); rr.reader := SELF;
+		SELF.InitReader(rr, DefaultReaderSize);
+		SELF.received := pos; (* this effects that Streams.Reader.Pos() returns the correct location in the file *)
+	END InitStreamReader;
+	
+	PROCEDURE (SELF: Reader) SetTimeout* (timeoutSeconds : INTEGER), NEW;
+		VAR rr: ReaderReceiver;
+	BEGIN
+		SELF.readTimeoutSeconds := timeoutSeconds;
+	END SetTimeout;
+
+	PROCEDURE (SELF: Writer) Send (IN buf: ARRAY OF SHORTCHAR; ofs, len: AO.SIZE; propagate: BOOLEAN; VAR res: INTEGER), NEW;
+		VAR lenWriten: INTEGER;
+	BEGIN
+
+
+		WHILE SELF.s.IsConnected() & (len > 0) DO
+			SELF.s.WriteBytes(SYSTEM.VAL(Bytes, buf), ofs, len, lenWriten);
+			INC(ofs, lenWriten); DEC(len, lenWriten);
+		END;
+
+		IF SELF.s.IsConnected() THEN res := Streams.Ok ELSE res := WriteError (* not all bytes written *) END
+	END Send;
+
+	PROCEDURE (SELF: WriterSender) Send* (IN buf: ARRAY OF SHORTCHAR; ofs, len: AO.SIZE; propagate: BOOLEAN; VAR res: INTEGER);
+	BEGIN
+		SELF.writer.Send(buf, ofs, len, propagate, res);
+	END Send;
+
+	PROCEDURE (SELF: Writer) CanSetPos* (): BOOLEAN;
+	BEGIN
+		RETURN FALSE;
+	END CanSetPos;
+
+	PROCEDURE (SELF: Writer) SetPos* (pos: Streams.Position);
+	BEGIN
+		HALT(123)
+	END SetPos;
+
+	PROCEDURE (SELF: Writer) Pos* (): Streams.Position;
+	BEGIN
+		HALT(123);
+		RETURN - 1;
+	END Pos;
+
+	PROCEDURE (SELF: Writer) InitStreamWriter* (s: CommStreams.Stream; pos: Streams.Position), NEW;
+		VAR ws: WriterSender;
+	BEGIN
+		ASSERT(s # NIL);
+		SELF.s := s;
+		NEW(ws); ws.writer := SELF;
+		SELF.InitWriter(ws, DefaultWriterSize);
+	END InitStreamWriter;
+
+	PROCEDURE OpenWriter* (VAR w: Streams.Writer; s: CommStreams.Stream; pos: Streams.Position);
+		VAR b: Writer;
+	BEGIN
+		ASSERT(s # NIL);
+		NEW(b); b.InitStreamWriter(s, pos);
+		w := b;
+	END OpenWriter;
+
+	PROCEDURE OpenReader* (VAR r: Streams.Reader; s: CommStreams.Stream; pos: Streams.Position; timeoutSeconds:INTEGER);
+		VAR b: Reader;
+	BEGIN
+		NEW(b); b.InitStreamReader(s, pos);
+		b.SetTimeout(timeoutSeconds);
+		r := b;
+	END OpenReader;
+
+END CryptoAosCommStreams.

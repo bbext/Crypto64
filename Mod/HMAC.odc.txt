@@ -1,0 +1,102 @@
+MODULE CryptoHMAC;(** AUTHOR "G.F."; PURPOSE "RFC 2104 HMAC"; *)
+
+	IMPORT Hashes := CryptoHashes, Strings := CryptoAosStrings, BIT := CryptoAosBIT, AO := CryptoAosCompat;
+
+	TYPE
+		HMac* = POINTER TO EXTENSIBLE RECORD
+			size* : AO.SIZE;
+			name* : ARRAY 64 OF SHORTCHAR;
+			ih, oh : Hashes.Hash;
+			L : AO.SIZE;
+			n : AO.SIZE
+		END;
+
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: HMac) Init* (IN hashmod : ARRAY OF SHORTCHAR), NEW;
+
+	BEGIN
+		SELF.ih := Hashes.NewHash(hashmod);
+		SELF.oh := Hashes.NewHash(hashmod);
+		SELF.L := SELF.ih.size;
+		SELF.size := SELF.L;
+		SELF.n := 0;
+		SELF.name := "hmac-";
+		Strings.Append(SELF.name, SELF.ih.name)
+	END Init;
+
+	PROCEDURE (SELF: HMac) ShrinkLength* (len : AO.SIZE), NEW;
+		VAR
+			bits: ARRAY 8 OF SHORTCHAR;
+
+
+	BEGIN
+		ASSERT((len < SELF.size) & (SELF.n = 0));
+		Strings.IntToStr(8 * len, bits);
+		Strings.Append(SELF.name, "-");
+		Strings.Append(SELF.name, bits);
+		SELF.size := len
+	END ShrinkLength;
+
+	PROCEDURE (SELF: HMac) Initialize* (IN key : ARRAY OF SHORTCHAR; len : AO.SIZE), NEW;
+		VAR
+			usedkey, buf: ARRAY 64 OF SHORTCHAR;
+			i: AO.SIZE;
+
+
+	BEGIN
+		IF len > 64 THEN
+			SELF.ih.Initialize;
+			SELF.ih.Update(key, 0, len);
+			SELF.ih.GetHash(usedkey, 0);
+			i := SELF.L;
+			WHILE i < 64 DO
+				usedkey[i] := 0X;
+				INC(i)
+			END
+		ELSE
+			i := 0;
+			WHILE i < len DO
+				usedkey[i] := key[i];
+				INC(i)
+			END;
+			WHILE i < 64 DO
+				usedkey[i] := 0X;
+				INC(i)
+			END
+		END;
+		SELF.oh.Initialize;
+		FOR i := 0 TO 63 DO
+			buf[i] := BIT.CXOR(5CX, usedkey[i])
+		END;
+		SELF.oh.Update(buf, 0, 64);
+		SELF.ih.Initialize;
+		FOR i := 0 TO 63 DO
+			buf[i] := BIT.CXOR(36X, usedkey[i])
+		END;
+		SELF.ih.Update(buf, 0, 64)
+	END Initialize;
+
+	PROCEDURE (SELF: HMac) Update* (IN data : ARRAY OF SHORTCHAR; pos, len : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.ih.Update(data, pos, len);
+		INC(SELF.n, len)
+	END Update;
+
+	PROCEDURE (SELF: HMac) GetMac* (VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE), NEW;
+		VAR
+			tmp: ARRAY 64 OF SHORTCHAR;
+			i: AO.SIZE;
+
+
+	BEGIN
+		SELF.ih.GetHash(tmp, 0);
+		SELF.oh.Update(tmp, 0, SELF.L);
+		SELF.oh.GetHash(tmp, 0);
+		FOR i := 0 TO SELF.size - 1 DO
+			buf[pos + i] := tmp[i]
+		END
+	END GetMac;
+
+END CryptoHMAC.

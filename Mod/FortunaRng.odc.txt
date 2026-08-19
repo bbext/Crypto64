@@ -1,0 +1,467 @@
+MODULE CryptoFortunaRng;
+
+(**
+	AUTHOR: Alexey Morozov
+	PURPOSE: Fortuna cryptographic pseudorandom generator for A2
+*)
+
+	IMPORT Fortuna := CryptoFortuna, Kernel, Random := CryptoAosRandom, Strings := CryptoAosStrings, Files := CryptoAosFileStreams, Streams :=  CryptoAosStreams, 
+StdLog, AO := CryptoAosCompat, Services, DevHeapSpy, Dates;
+
+	CONST
+		CollectEntropyIntervalMs* = 1000;
+		HeapsStats = TRUE;
+
+	TYPE
+		EntropySource = PROCEDURE(SELF: EntropyCollector; timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE);
+		EntropySourceDesc = EXTENSIBLE RECORD
+			name : ARRAY 64 OF SHORTCHAR;
+			source : EntropySource;
+			lastCollectTime : AO.SIGNED32;
+			file : Files.File;
+			writer : Streams.Writer
+		END;
+		EntropyCollector = POINTER TO EXTENSIBLE RECORD
+			systemTimePrev : INTEGER;
+			objectsNumReadyPrev : INTEGER;
+			currentProcessTimePrev : INTEGER;
+			heapsUsagePrev : INTEGER;
+			heapsAllocStatsPrev : INTEGER;
+			heapsCallCountStatsPrev : INTEGER;
+			heapsObjCountStatsPrev : INTEGER;
+			heapsGcTimeStatsPrev : INTEGER;
+			heapsSweepTimeStatsPrev : INTEGER;
+			sources : ARRAY 256 OF EntropySourceDesc;
+			numSources : AO.SIZE;
+			permutedSourceInds : Fortuna.Permutation;
+			storing : BOOLEAN;
+			generators : Generator;
+			rand : Random.Generator;
+			alive : BOOLEAN;
+
+		END;
+			
+		randInt = POINTER TO RECORD(Fortuna.IntGen) rand : Random.Generator; END;
+		
+		Generator* = POINTER TO EXTENSIBLE RECORD
+			accumulator : Fortuna.Accumulator;
+			collector : Fortuna.EntropyCollector;
+			sourceNums : Fortuna.Permutation;
+			prev : Generator;
+			next : Generator
+		END;
+
+	VAR
+		generator: Generator;
+		entropyCollector: EntropyCollector;
+
+	PROCEDURE (SELF: EntropyCollector) AppendInt16 (value : INTEGER; VAR valuePrev : INTEGER; VAR data : ARRAY OF SHORTCHAR; VAR dataOffs : AO.SIZE), NEW;
+	BEGIN
+		IF value # valuePrev THEN
+			Fortuna.Int16ToBytes(value, data, dataOffs);
+			valuePrev := value
+		END
+	END AppendInt16;
+
+	PROCEDURE SystemTimeSource (SELF: EntropyCollector; timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE);
+		VAR
+			time: Dates.Time; date: Dates.Date;
+	BEGIN
+		dataLen := 0;
+		Dates.GetDateTime(date, time);
+		SELF.AppendInt16( date.year + date.month + date.day  + time.hour + time.minute + time.second, SELF.systemTimePrev, data, dataLen)
+	END SystemTimeSource;
+
+(*	 PROCEDURE (SELF: EntropyCollector) MachineTimerSource (timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		dataLen := 0;
+		Fortuna.Int24ToBytes(SIGNED32(Machine.GetTimer()), data, dataLen)
+	END MachineTimerSource; 
+
+       PROCEDURE (SELF: EntropyCollector) ObjectsNumReadySource (timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		dataLen := 0;
+		SELF.AppendInt16(INTEGER(Objects.NumReady()), SELF.objectsNumReadyPrev, data, dataLen)
+	END ObjectsNumReadySource; *)
+
+	PROCEDURE CurrentProcessTimeSource (SELF: EntropyCollector; timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE);
+	BEGIN
+		dataLen := 0;
+		SELF.AppendInt16(SHORT(Services.Ticks()), SELF.currentProcessTimePrev, data, dataLen)
+	END CurrentProcessTimeSource; 
+
+	PROCEDURE HeapsUsageSource (SELF: EntropyCollector; timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE);
+	BEGIN
+		dataLen := 0;
+		IF timeSinceLastCallMs >= 1000 THEN
+						SELF.AppendInt16( DevHeapSpy.par.clusters + DevHeapSpy.par.heapsize, SELF.systemTimePrev, data, dataLen)
+		END;
+
+	END HeapsUsageSource;
+
+	PROCEDURE HeapsAllocStatsSource (SELF: EntropyCollector; timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE) ;
+	BEGIN
+		dataLen := 0;
+		SELF.AppendInt16( SHORT(DevHeapSpy.par.allocated), SELF.systemTimePrev, data, dataLen)	(* 64-bit: allocated = LONGINT *)
+	END HeapsAllocStatsSource;
+
+(*	PROCEDURE (SELF: EntropyCollector) HeapsCallCountStatsSource (timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		dataLen := 0;
+		SELF.AppendInt16(INTEGER(Heaps.Ngc + Heaps.NgcSweeps + Heaps.Nmark + Heaps.Nnew), SELF.heapsCallCountStatsPrev, data, dataLen)
+	END HeapsCallCountStatsSource; 
+
+	PROCEDURE (SELF: EntropyCollector) HeapsObjCountStatsSource (timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		dataLen := 0;
+		SELF.AppendInt16(INTEGER(Heaps.Nmarked + Heaps.NfinalizeAlive + Heaps.NfinalizeDead), SELF.heapsObjCountStatsPrev, data, dataLen)
+	END HeapsObjCountStatsSource;
+
+	PROCEDURE (SELF: EntropyCollector) HeapsGcTimeStatsSource (timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		dataLen := 0;
+		SELF.AppendInt16(INTEGER(Heaps.NgcCyclesAllRuns + Heaps.NgcCyclesMax), SELF.heapsGcTimeStatsPrev, data, dataLen)
+	END HeapsGcTimeStatsSource;
+
+	PROCEDURE (SELF: EntropyCollector) HeapsSweepTimeStatsSource (timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		dataLen := 0;
+		SELF.AppendInt16(INTEGER(Heaps.NgcSweepTime + Heaps.NgcSweepMax), SELF.heapsSweepTimeStatsPrev, data, dataLen)
+	END HeapsSweepTimeStatsSource; *)
+
+	PROCEDURE RandSource (SELF: EntropyCollector; timeSinceLastCallMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; VAR dataLen : AO.SIZE);
+
+	BEGIN
+		Fortuna.Int32ToBytes(SELF.rand.Integer(), data, dataLen)
+	END RandSource;
+
+		PROCEDURE (SELF: randInt) Do*() : INTEGER;
+		BEGIN
+			RETURN SELF.rand.Integer();
+		END Do;
+
+	PROCEDURE (SELF: EntropyCollector) Init (), NEW;
+		VAR ri : randInt; 
+		PROCEDURE AddSource (IN name : ARRAY OF SHORTCHAR; source : EntropySource);
+
+		BEGIN
+			AO.COPY(name, SELF.sources[SELF.numSources].name);
+			SELF.sources[SELF.numSources].source := source;
+			SELF.sources[SELF.numSources].lastCollectTime := SHORT(Services.Ticks()) - 60000;
+			INC(SELF.numSources)
+		END AddSource;
+
+	BEGIN
+		ASSERT(~SELF.alive);
+
+	    (*    AddSource("MachineTimer", MachineTimerSource); *)
+		AddSource("SystemTime", SystemTimeSource);
+	    (*     AddSource("ObjectsNumReady", ObjectsNumReadySource);*)
+		 AddSource("CurrentProcessTime", CurrentProcessTimeSource);
+		AddSource("HeapsUsage", HeapsUsageSource);
+	       IF HeapsStats THEN
+			AddSource("HeapsAllocStats", HeapsAllocStatsSource);
+	       (*	 AddSource("HeapsCallCountStats", HeapsCallCountStatsSource);*)
+		(*	AddSource("HeapsObjCountStats", HeapsObjCountStatsSource);*)
+	       (*	 AddSource("HeapsGcTimeStats", HeapsGcTimeStatsSource);*)
+	       (*	 AddSource("HeapsSweepTimeStats", HeapsSweepTimeStatsSource)*)
+		END;
+		AddSource("Rand", RandSource);
+		NEW(SELF.rand);
+		SELF.rand.InitSeed(SHORT(Services.Ticks()));
+
+		NEW(ri);ri.rand := SELF.rand;
+		SELF.permutedSourceInds.Init(ri, SELF.numSources);
+		SELF.alive := TRUE
+	END Init;
+
+	PROCEDURE (SELF: EntropyCollector) SeedRand (), NEW;
+		VAR
+			buf: ARRAY 32 OF SHORTCHAR;
+			crc: Fortuna.Crc32;
+			seed: AO.SIGNED32;
+
+		VAR
+			t: LONGINT;
+			k: AO.SIZE;
+			n: AO.SIZE;
+
+	BEGIN
+		t := Services.Ticks();
+	(*	Kernel.GC;
+		SELF.timer.Sleep(SIGNED32(100 + (Services.Ticks() MOD 128)));*)
+		t := Services.Ticks() - t;
+		crc.InitDefault();
+		k := 0;
+		WHILE k < SELF.numSources DO
+			n := 0;
+			SELF.sources[k].source(SELF, MAX(AO.SIGNED32), buf, n);
+			IF n # 0 THEN
+				SELF.sources[k].lastCollectTime := SHORT(Services.Ticks());
+				crc.OP6(buf, 0, n)
+			END;
+			INC(k)
+		END;
+		seed := (crc.Get());
+		SELF.rand.InitSeed(seed)
+	END SeedRand;
+
+	PROCEDURE (SELF: Generator) FeedEntropy (sourceNum : INTEGER; IN data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.collector.Collect(SELF.accumulator, sourceNum, data, dataOffs, dataLen)
+	END FeedEntropy;
+
+	PROCEDURE (SELF: EntropyCollector) SeedFirstGenerator (gen : Generator), NEW;
+		VAR
+			k, m, n: AO.SIZE;
+			buf: ARRAY Fortuna.MinPoolSize OF SHORTCHAR;
+						sourceNum : INTEGER;
+
+	BEGIN
+		FOR k := 0 TO Fortuna.NumPools - 1 DO
+			m := 0;
+			WHILE m < Fortuna.MinPoolSize DO
+				n := 0;
+				RandSource(SELF, 0, buf, n);
+				ASSERT(n # 0);
+				sourceNum := (gen.sourceNums.Get(k MOD SELF.numSources));
+				gen.FeedEntropy(sourceNum, buf, 0, n);
+				INC(m, n)
+			END
+		END;
+		ASSERT(gen.accumulator.IsReady(0))
+	END SeedFirstGenerator;
+
+	PROCEDURE (SELF: EntropyCollector) RegisterGenerator (gen : Generator), NEW;
+		VAR ri : randInt; 
+	BEGIN
+		ASSERT(gen.prev = NIL);
+		ASSERT(gen.next = NIL);
+				NEW(ri); ri.rand := SELF.rand;
+		gen.sourceNums.Init(ri, SELF.numSources);
+		IF SELF.generators # NIL THEN
+			SELF.generators.next := gen;
+			gen.prev := SELF.generators
+		ELSE
+			SELF.generators := gen;
+			SELF.SeedFirstGenerator(gen)
+		END
+	END RegisterGenerator;
+
+	PROCEDURE (SELF: EntropyCollector) UnregisterGenerator (gen : Generator), NEW;
+
+	BEGIN
+		ASSERT(SELF.generators # NIL);
+		IF gen.prev # NIL THEN
+			IF gen.next # NIL THEN
+				gen.prev.next := gen.next;
+				gen.next.prev := gen.prev
+			ELSE
+				gen.prev.next := NIL
+			END
+		ELSE
+			ASSERT(gen = SELF.generators);
+			SELF.generators := SELF.generators.next
+		END;
+		gen.prev := NIL;
+		gen.next := NIL;
+
+		StdLog.String("unregistered an instance of Fortuna generator");
+
+	END UnregisterGenerator;
+
+	PROCEDURE (SELF: EntropyCollector) CollectEntropy (), NEW;
+		VAR
+			buf: ARRAY 32 OF SHORTCHAR;
+
+		VAR
+			k: AO.SIZE;
+			sourceIndex: INTEGER;
+
+		PROCEDURE CollectFromSource (VAR source : EntropySourceDesc; sourceIndex : INTEGER);
+			VAR
+				timeSinceLastCollect: INTEGER;
+				dataLen: AO.SIZE;
+				gen: Generator;
+
+		BEGIN
+			timeSinceLastCollect := SHORT(Services.Ticks()) - source.lastCollectTime;
+			dataLen := 0;
+			source.source(SELF, timeSinceLastCollect, buf, dataLen);
+			IF dataLen # 0 THEN
+				source.lastCollectTime := SHORT(Services.Ticks());
+				gen := SELF.generators;
+				WHILE gen # NIL DO
+					gen.FeedEntropy((gen.sourceNums.Get(sourceIndex)), buf, 0, dataLen);
+					gen := gen.next
+				END;
+				IF SELF.storing & (source.writer # NIL) THEN
+					source.writer.Bytes(buf, 0, dataLen);
+					source.writer.Update
+				END
+			END;
+		END CollectFromSource;
+
+	BEGIN
+		IF SELF.generators # NIL THEN
+			k := 0;
+			WHILE k < SELF.numSources DO
+				sourceIndex := (SELF.permutedSourceInds.Get(k));
+				CollectFromSource(SELF.sources[sourceIndex], sourceIndex);
+				INC(k)
+			END
+		END
+	END CollectEntropy;
+
+	PROCEDURE (SELF: EntropyCollector) StartStoring* (): BOOLEAN, NEW;
+		VAR
+			fileName: ARRAY 256 OF SHORTCHAR;
+			k: AO.SIZE;
+		PROCEDURE SetupSourceStoring (VAR source : EntropySourceDesc);
+			VAR
+				file: Files.File;
+				writer: Files.Writer;
+								res : INTEGER;
+		BEGIN
+			Strings.Concat("FortunaEntropy-", source.name, fileName);
+			file := Files.New(fileName); ASSERT(file # NIL);
+						Files.Register(file);
+			Files.OpenWriter(writer, file, 0);
+			source.file := file;
+			source.writer := writer
+		END SetupSourceStoring;
+
+	BEGIN
+		IF SELF.storing THEN
+			RETURN FALSE
+		END;
+		FOR k := 0 TO SELF.numSources - 1 DO
+			SetupSourceStoring(SELF.sources[k])
+		END;
+		SELF.storing := TRUE;
+		RETURN TRUE
+	END StartStoring;
+
+	PROCEDURE (SELF: EntropyCollector) StopStoring (): BOOLEAN, NEW;
+		VAR
+			k: AO.SIZE;
+	BEGIN
+		IF SELF.storing THEN
+			SELF.storing := FALSE;
+			FOR k := 0 TO SELF.numSources - 1 DO
+				IF SELF.sources[k].file # NIL THEN
+					SELF.sources[k].writer.Update;
+					SELF.sources[k].file.Close;
+					SELF.sources[k].writer := NIL;
+					SELF.sources[k].file := NIL
+				END
+			END;
+			RETURN TRUE
+		ELSE
+			RETURN FALSE
+		END
+	END StopStoring;
+
+	PROCEDURE (SELF: EntropyCollector) Exit (), NEW;
+
+	BEGIN
+		SELF.generators := NIL;
+		SELF.alive := FALSE;
+	   (*     SELF.timer.Wakeup *)
+	END Exit;
+
+	PROCEDURE (SELF: Generator) Generate* (VAR data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		ASSERT(entropyCollector.alive);
+		SELF.accumulator.Generate(SHORT(Services.Ticks()), data, dataOffs, dataLen)
+	END Generate;
+
+	PROCEDURE (SELF: Generator) Init (gen : Generator), NEW;
+		VAR
+			k, m: AO.SIZE;
+			buf: ARRAY Fortuna.MaxRandomEventDataLen OF SHORTCHAR;
+							sourceNum : INTEGER;
+
+	BEGIN
+		SELF.accumulator.Init;
+		SELF.collector.Init;
+		entropyCollector.RegisterGenerator(SELF);
+
+		IF gen # NIL THEN
+			FOR k := 0 TO Fortuna.NumPools - 1 DO
+				m := 0;
+				WHILE m < Fortuna.MinPoolSize DO
+					gen.Generate(buf, 0, Fortuna.MaxRandomEventDataLen);
+					sourceNum := (SELF.sourceNums.Get(k MOD entropyCollector.numSources));
+					SELF.FeedEntropy(sourceNum, buf, 0, Fortuna.MaxRandomEventDataLen);
+					INC(m, Fortuna.MaxRandomEventDataLen)
+				END
+			END
+		END
+	END Init;
+
+	PROCEDURE (SELF: Generator) NewInstance* (): Generator, NEW;
+				VAR g : Generator;
+	BEGIN
+				NEW(g); g.Init(SELF);
+		RETURN g
+	END NewInstance;
+
+	PROCEDURE (SELF: Generator) FINALIZE- ();
+	BEGIN
+		IF entropyCollector # NIL THEN
+			entropyCollector.UnregisterGenerator(SELF)
+		END
+	END FINALIZE;
+
+	PROCEDURE Generate* (VAR data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE);
+	BEGIN
+		generator.Generate(data, dataOffs, dataLen)
+	END Generate;
+
+	PROCEDURE NewGenerator* (): Generator;
+	BEGIN
+		RETURN generator.NewInstance()
+	END NewGenerator;
+
+	PROCEDURE StartStoringEntropy* ();
+	BEGIN
+		IF entropyCollector.StartStoring() THEN
+			StdLog.String("started storing Fortuna entropy data");
+			StdLog.Ln
+		ELSE
+			StdLog.String("Fortuna entropy data storing has been already started");
+			StdLog.Ln
+		END
+	END StartStoringEntropy;
+
+	PROCEDURE StopStoringEntropy* ();
+	BEGIN
+		IF entropyCollector.StopStoring() THEN
+			StdLog.String("stopped storing Fortuna entropy data");
+			StdLog.Ln
+		END
+	END StopStoringEntropy;
+
+	PROCEDURE TerminateMod ;
+	BEGIN
+		IF entropyCollector # NIL THEN
+			entropyCollector.Exit;
+			entropyCollector := NIL
+		END;
+	END TerminateMod;
+
+BEGIN
+	NEW(entropyCollector);entropyCollector.Init();
+	NEW(generator); generator.Init( NIL);
+CLOSE
+	TerminateMod
+END CryptoFortunaRng.

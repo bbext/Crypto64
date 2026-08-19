@@ -1,0 +1,86 @@
+MODULE CryptoTestRSA;
+
+	IMPORT RSA := CryptoRSA, B := CryptoAosBigNumbers, P := CryptoPrimes, Files, Log := StdLog, AO := CryptoAosCompat, AosFileStreams := CryptoAosFileStreams;
+
+	CONST
+		Size = 1024;
+
+	PROCEDURE Test1* ;
+		VAR
+			pub, priv: RSA.Key;
+			p, q, e, signature: B.BigNumber;
+			digest: ARRAY 64 OF SHORTCHAR;
+	BEGIN
+		Log.String("generating RSA Keys");
+		Log.Ln;
+		p := P.NewPrime(Size DIV 2, FALSE);
+		Log.String("p = ");
+		B.Print(p);
+		Log.Ln;
+		q := P.NewPrime(Size DIV 2, FALSE);
+		Log.String("q = ");
+		B.Print(q);
+		Log.Ln;
+		B.AssignInt(e, 3);
+		RSA.MakeKeys(p, q, e, "Test Key", pub, priv);
+		digest := "Everyone gets Friday off her panties.";
+		signature := priv.Sign(digest, 32);
+		IF signature # NIL THEN
+			IF pub.Verify(digest, 32, signature) THEN
+				Log.String("sign : verify  ok");
+				Log.Ln
+			ELSE
+				Log.String("sign : verify failed");
+				Log.Ln
+			END
+		ELSE
+			Log.String("error: wrong passphrase for private key");
+			Log.Ln
+		END
+	END Test1;
+
+	PROCEDURE TestRSAKeyFiles*(PrivateKeyFile, PublicKeyFile, pw : ARRAY OF CHAR) ;
+		CONST
+			headline = "enter passphrase for opening your private key";
+
+		VAR
+			pub, priv: RSA.Key;
+			signature: B.BigNumber;
+			digest: ARRAY 64 OF SHORTCHAR;
+			f: AosFileStreams.File;
+			r: AosFileStreams.Reader;
+			i, ignore: AO.SIGNED32;
+
+	BEGIN
+		f := AosFileStreams.Old(SHORT(PrivateKeyFile )); 
+		AosFileStreams.OpenReader(r, f, 0);
+		i := 0;
+		REPEAT
+			r.SetPos(0);
+			priv := RSA.LoadPrivateKey(r, SHORT(pw));
+			INC(i)
+		UNTIL (priv # NIL) OR (i = 3);
+		IF priv = NIL THEN
+			Log.String("wrong passphrase");
+			Log.Ln;
+			RETURN
+		END;
+		f := AosFileStreams.Old(SHORT(PublicKeyFile));
+		AosFileStreams.OpenReader(r, f, 0);
+		pub := RSA.LoadPublicKey(r);
+		digest := "Everyone gets Friday off her panties.";
+		signature := priv.Sign(digest, 32);
+		IF pub.Verify(digest, 32, signature) THEN
+			Log.String("sign : verify  ok");
+			Log.Ln
+		ELSE
+			Log.String("sign : verify failed");
+			Log.Ln
+		END
+	END TestRSAKeyFiles;
+
+END CryptoTestRSA.
+
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestRSA.Test1 
+TODO
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>"CryptoTestRSA.TestRSAKeyFiles('SSH.RSAKey.priv', 'SSH.RSAKey.pub', 'passphrase')"

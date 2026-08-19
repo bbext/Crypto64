@@ -1,0 +1,1780 @@
+MODULE CryptoAosStreams;
+
+(**
+	Aos, Copyright 2001, Pieter Muller, ETH Zurich
+	AUTHOR "pjm/be"; PURPOSE "I/O buffering and formatted writing and reading";
+
+*)
+
+	IMPORT SYSTEM, RC := (*CONV FROM RealConversions*)
+CryptoAosRealConversions, AO := CryptoAosCompat, StdLog;
+
+	CONST
+		Ok* = 0;
+		EOF* = 4201;
+		EOT* = 1AX;
+		StringFull = 4202;
+		FormatError* = 4203;
+		DefaultWriterSize* = 4096;
+		DefaultReaderSize* = 4096;
+		Invalid* = (-1);
+
+	CONST
+		CR = 0DX;
+		LF = 0AX;
+		TAB = 9X;
+		SP = 20X;
+
+	TYPE
+		ByteOrder* = INTEGER;
+		Char16* = AO.UNSIGNED16;
+		Char32* = AO.SIGNED32;
+		Position* = AO.SIGNED64;
+
+				(** Any stream output procedure or method. *)
+		Sender* = POINTER TO ABSTRACT RECORD END;
+				(** Any stream input procedure or method. *)
+		Receiver* = POINTER TO ABSTRACT RECORD END;
+
+		Connection* = POINTER TO ABSTRACT RECORD 
+					sender*: Sender;
+					receiver*: Receiver;
+				END;
+
+	CONST
+		ByteOrder_BigEndian* = 0;
+		ByteOrder_LittleEndian* = 1;
+
+	TYPE
+				(** A writer buffers output before it is sent to a Sender.  Must not be shared between processes. *)
+		Writer* = POINTER TO EXTENSIBLE RECORD
+			tail : AO.SIZE;
+			buf : POINTER TO ARRAY OF SHORTCHAR;
+			res* : INTEGER;
+			send* : Sender;
+			sent : Position;
+			byteOrder : ByteOrder
+		END;
+				(** A special writer that buffers output to be fetched by GetString or GetRawString. *)
+		StringWriter* = POINTER TO EXTENSIBLE RECORD(Writer) END;
+				StringWriterSender = POINTER TO RECORD(Sender) writer: StringWriter END;
+
+	TYPE
+				(** A reader buffers input received from a Receiver.  Must not be shared between processes. *)
+		Reader* = POINTER TO EXTENSIBLE RECORD
+			head, tail : AO.SIZE;
+			buf : POINTER TO ARRAY OF SHORTCHAR;
+			res* : INTEGER;
+			receive* : Receiver;
+			received* : Position;
+			byteOrder : ByteOrder
+		END;
+				ReaderPeekNext = POINTER TO RECORD(RC.PeekNext) reader: Reader END;
+
+	TYPE
+				(** A special reader that buffers input set by SetString or SetRawString. *)
+		StringReader* = POINTER TO EXTENSIBLE RECORD(Reader) END;
+				StringReaderReceiver = POINTER TO RECORD(Receiver) reader: StringReader END;
+
+		Bytes2 = ARRAY 2 OF SHORTCHAR;
+		Bytes4 = ARRAY 4 OF SHORTCHAR;
+		Bytes8 = ARRAY 8 OF SHORTCHAR;
+		String = POINTER TO ARRAY OF SHORTCHAR;
+				(** The stringmaker creates an automatically growing character array from the input with an Streams writer *)
+		Buffer* = POINTER TO EXTENSIBLE RECORD
+			length : AO.SIZE;
+			data : String;
+			w : Writer
+		END;
+				BufferSender = POINTER TO RECORD(Sender) buffer: Buffer END;
+
+	VAR
+		months: ARRAY 12 * 4 + 1 OF SHORTCHAR;
+
+		
+PROCEDURE (SELF:Sender) Send*(IN buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE; propagate : BOOLEAN; VAR res : INTEGER), NEW, ABSTRACT;
+
+PROCEDURE (SELF:Receiver) Receive* (VAR buf : ARRAY OF SHORTCHAR; ofs, size, min : AO.SIZE; VAR len : AO.SIZE; VAR res : INTEGER) ,NEW, ABSTRACT;
+
+	PROCEDURE (SELF: Connection) Close*(),NEW,  ABSTRACT;
+
+	PROCEDURE (SELF: Writer) Reset* , NEW;
+	BEGIN
+		SELF.tail := 0;
+		SELF.res := Ok;
+		SELF.sent := (*WARN CONV CAST*)LONG(0)
+	END Reset;
+
+	PROCEDURE (SELF: Writer) CanSetPos* (): BOOLEAN, NEW, EXTENSIBLE;
+	BEGIN
+		RETURN FALSE
+	END CanSetPos;
+
+	PROCEDURE (SELF: Writer) SetPos* (pos : Position), NEW, EXTENSIBLE;
+	BEGIN
+		HALT(123)
+	END SetPos;
+
+	PROCEDURE (SELF: Writer) SetByteOrder* (order : ByteOrder), NEW;
+	BEGIN
+		SELF.byteOrder := order
+	END SetByteOrder;
+		(* Flush *)
+	PROCEDURE (SELF: Writer) Update* , NEW, EXTENSIBLE;
+	BEGIN
+				(*StdLog.String("Stream writer Update");StdLog.Int(SELF.res);StdLog.Ln;*)
+		IF (SELF.res = Ok) THEN
+			SELF.send.Send(SELF.buf^, 0, SELF.tail, TRUE, SELF.res);
+			IF SELF.res = Ok THEN
+				INC(SELF.sent, SELF.tail);
+				SELF.tail := 0
+			END
+		END
+	END Update;
+
+	PROCEDURE (SELF: Writer) Pos* (): Position, NEW, EXTENSIBLE;
+
+	BEGIN
+		RETURN SELF.sent + SELF.tail
+	END Pos;
+
+	PROCEDURE (SELF: Writer) Char* (x : SHORTCHAR), NEW;
+
+	BEGIN
+				(*StdLog.String("Stream writer Char");StdLog.Int(SELF.res); StdLog.Ln;*)
+		IF (SELF.tail = LEN(SELF.buf)) & (SELF.res = Ok) THEN
+			SELF.send.Send(SELF.buf^, 0, SELF.tail, FALSE, SELF.res);
+			IF SELF.res = Ok THEN
+				INC(SELF.sent, SELF.tail);
+				SELF.tail := 0
+			END
+		END;
+		IF SELF.res = Ok THEN
+			SELF.buf[SELF.tail] := x;
+			INC(SELF.tail)
+		END
+	END Char;
+	
+		(** Write len bytes from x, starting at ofs. *)
+	PROCEDURE (SELF: Writer) Bytes* (IN x : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE), NEW;
+		VAR
+			n: AO.SIZE;
+	BEGIN
+		ASSERT(len >= 0);
+				(*StdLog.String("Stream writer Bytes");StdLog.Int(SELF.res); StdLog.Ln;*)
+		LOOP
+			n := LEN(SELF.buf) - SELF.tail;
+			IF n = 0 THEN
+				IF SELF.res = Ok THEN
+					SELF.send.Send(SELF.buf^, 0, SELF.tail, FALSE, SELF.res);
+					IF SELF.res = Ok THEN
+						INC(SELF.sent, SELF.tail);
+						SELF.tail := 0
+					ELSE
+						EXIT
+					END
+				ELSE
+					EXIT
+				END;
+				n := LEN(SELF.buf)
+			END;
+			IF n > len THEN
+				n := len
+			END;
+			ASSERT(SELF.tail + n <= LEN(SELF.buf));
+			SYSTEM.MOVE(SYSTEM.ADR(x[ofs]), SYSTEM.ADR(SELF.buf^[SELF.tail]), n);
+			INC(SELF.tail, n);
+			IF len = n THEN
+				EXIT
+			END;
+			INC(ofs, n);
+			DEC(len, n)
+		END
+	END Bytes;
+
+	PROCEDURE (SELF: Writer) RawSInt* (x : AO.SIGNED8), NEW;
+
+	BEGIN
+		SELF.Char(SYSTEM.VAL(SHORTCHAR, x))
+	END RawSInt;
+
+	PROCEDURE (SELF: Writer) RawInt* (x : AO.SIGNED16), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes2, x), 0, 2)
+	END RawInt;
+
+	PROCEDURE (SELF: Writer) RawLInt* (x : AO.SIGNED32), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes4, x), 0, 4)
+	END RawLInt;
+
+	PROCEDURE (SELF: Writer) RawHInt* (x : AO.SIGNED64), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes8, x), 0, 8)
+	END RawHInt;
+
+	PROCEDURE (SELF: Writer) RawUInt8* (x : AO.UNSIGNED8), NEW;
+
+	BEGIN
+		SELF.Char(SYSTEM.VAL(SHORTCHAR, x))
+	END RawUInt8;
+
+	PROCEDURE (SELF: Writer) RawUInt16* (x : AO.UNSIGNED16), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes2, x), 0, 2)
+	END RawUInt16;
+
+	PROCEDURE (SELF: Writer) RawUInt32* (x : AO.UNSIGNED32), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes4, x), 0, 4)
+	END RawUInt32;
+
+	PROCEDURE (SELF: Writer) RawUInt64* (x : AO.UNSIGNED64), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes8, x), 0, 8)
+	END RawUInt64;
+
+	PROCEDURE (SELF: Writer) Net32* (x : AO.SIGNED32), NEW;
+
+	BEGIN
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(x DIV 1000000H MOD 100H)));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(x DIV 10000H MOD 100H)));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(x DIV 100H MOD 100H)));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(x MOD 100H)))
+	END Net32;
+
+	PROCEDURE (SELF: Writer) UNet32* (x : AO.UNSIGNED32), NEW;
+
+	BEGIN
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED32(AO.UDiv32(x, AO.TOUNSIGNED32(1000000H))))));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED32(AO.UDiv32(x, AO.TOUNSIGNED32(10000H))))));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED32(AO.UDiv32(x, AO.TOUNSIGNED32(100H))))));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED32(AO.UMod32(x, AO.TOUNSIGNED32(100H))))))
+	END UNet32;
+
+	PROCEDURE (SELF: Writer) Net64* (x : AO.SIGNED64), NEW;
+
+	BEGIN
+		SELF.Net32(SHORT(x DIV 100000000 MOD 100000000));
+		SELF.Net32(SHORT(x MOD 100000000))
+	END Net64;
+
+	PROCEDURE (SELF: Writer) UNet64* (x : AO.UNSIGNED64), NEW;
+
+	BEGIN
+		SELF.UNet32(AO.SHORT64(AO.UDiv64(x, AO.TOUNSIGNED64(100000000))));
+		SELF.UNet32(AO.SHORT64(AO.UMod64(x, AO.TOUNSIGNED64(100000000))))
+	END UNet64;
+
+	
+
+	PROCEDURE (SELF: Writer) Net16* (x : AO.SIGNED32), NEW;
+
+	BEGIN
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(x DIV 100H MOD 100H)));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(x MOD 100H)))
+	END Net16;
+
+	PROCEDURE (SELF: Writer) UNet16* (x : AO.UNSIGNED16), NEW;
+
+	BEGIN
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED16(AO.UDiv16(x, AO.TOUNSIGNED16(100H))))));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED16(AO.UMod16(x, AO.TOUNSIGNED16(100H))))))
+	END UNet16;
+
+	PROCEDURE (SELF: Writer) Net8* (x : AO.SIGNED32), NEW;
+
+	BEGIN
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(x MOD 100H)))
+	END Net8;
+
+	PROCEDURE (SELF: Writer) UNet8* (x : AO.UNSIGNED8), NEW;
+
+	BEGIN
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED8(x))))
+	END UNet8;
+
+
+	PROCEDURE (SELF: Writer) RawSet32* (x : SET), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes4, x), 0, 4)
+	END RawSet32;
+
+	PROCEDURE (SELF: Writer) RawSet* (x : SET), NEW;
+
+	BEGIN
+		SELF.RawSet32((*CONV REMOVE SET32*)
+(x))
+	END RawSet;
+
+
+	PROCEDURE (SELF: Writer) RawSet64* (x : AO.SET64), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes8, x), 0, 8)
+	END RawSet64;
+
+	PROCEDURE (SELF: Writer) RawBool* (x : BOOLEAN), NEW;
+
+	BEGIN
+		IF x THEN
+			SELF.Char(1X)
+		ELSE
+			SELF.Char(0X)
+		END
+	END RawBool;
+
+	PROCEDURE (SELF: Writer) RawReal* (x : AO.FLOAT32), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes4, x), 0, 4)
+	END RawReal;
+
+	PROCEDURE (SELF: Writer) RawLReal* (x : AO.FLOAT64), NEW;
+
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes8, x), 0, 8)
+	END RawLReal;
+
+	PROCEDURE (SELF: Writer) RawString* (IN x : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			i: AO.SIZE;
+	BEGIN
+		i := 0;
+		WHILE x[i] # 0X DO
+			SELF.Char(x[i]);
+			INC(i)
+		END;
+		SELF.Char(0X)
+	END RawString;
+
+	PROCEDURE (SELF: Writer) RawNum* (x : AO.SIGNED64), NEW;
+
+	BEGIN
+		WHILE (x < (-64)) OR (x > 63) DO
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(x MOD 128 + 128)));
+			x := x DIV 128
+		END;
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(x MOD 128)))
+	END RawNum;
+
+	PROCEDURE (SELF: Writer) Ln* , NEW;
+
+	BEGIN
+		SELF.Char(CR);
+		SELF.Char(LF)
+	END Ln;
+
+	PROCEDURE (SELF: Writer) String* (IN x : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		i := 0;
+		WHILE (i < LEN(x)) & (x[i] # 0X) DO
+			SELF.Char(x[i]);
+			INC(i)
+		END
+	END String;
+
+	PROCEDURE (SELF: Writer) Int* (x : AO.SIGNED64; w : AO.SIZE), NEW;
+		VAR
+			i: AO.SIZE;
+			x0: AO.SIGNED64;
+			a: ARRAY 21 OF SHORTCHAR;
+
+
+	BEGIN
+		IF x < 0 THEN
+			IF x = MIN(AO.SIGNED64) THEN
+				DEC(w, 20);
+				WHILE w > 0 DO
+					SELF.Char(" ");
+					DEC(w)
+				END;
+				SELF.String("-9223372036854775808");
+				RETURN
+			ELSE
+				DEC(w);
+				x0 := (-x)
+			END
+		ELSE
+			x0 := x
+		END;
+		i := 0;
+		REPEAT
+			a[i] := (*WARN CONV CAST*)SHORT(CHR(x0 MOD 10 + 30H));
+			x0 := x0 DIV 10;
+			INC(i)
+		UNTIL x0 = 0;
+		WHILE w > i DO
+			SELF.Char(" ");
+			DEC(w)
+		END;
+		IF x < 0 THEN
+			SELF.Char("-")
+		END;
+		REPEAT
+			DEC(i);
+			SELF.Char(a[i])
+		UNTIL i = 0
+	END Int;
+
+	PROCEDURE (SELF: Writer) Set* (s : SET), NEW;
+		VAR
+			i, last: INTEGER;
+			dots: BOOLEAN;
+	BEGIN
+		SELF.Char("{");
+		last := MAX(INTEGER);
+		dots := FALSE;
+		FOR i := MAX(SET) TO 0 BY (-1) DO
+			IF i IN s THEN
+				IF last = (i + 1) THEN
+					IF dots THEN
+						SELF.String("..");
+						dots := FALSE
+					END;
+					IF (i = 0) OR ~((i - 1) IN s) THEN
+						SELF.Int((*WARN CONV CAST*)LONG(i), 1)
+					END
+				ELSE
+					IF last <= MAX(SET) THEN
+						SELF.String(", ")
+					END;
+					SELF.Int((*WARN CONV CAST*)LONG(i), 1);
+					dots := TRUE
+				END;
+				last := i
+			END
+		END;
+		SELF.Char("}")
+	END Set;
+
+	PROCEDURE (SELF: Writer) Hex* (x : AO.SIGNED64; w : AO.SIZE), NEW;
+		VAR
+			filler: SHORTCHAR;
+			i, maxw: AO.SIZE;
+			a: ARRAY 20 OF SHORTCHAR;
+			y: AO.SIGNED64;
+	BEGIN
+		IF w < 0 THEN
+			filler := '0';
+			w := (-w);
+			maxw := w
+		ELSE
+			filler := ' ';
+			maxw := 16
+		END;
+		i := 0;
+		REPEAT
+			y := x MOD 10H;
+			IF y < 10 THEN
+				a[i] := (*WARN CONV CAST*)SHORT(CHR(y + ORD('0')))
+			ELSE
+				a[i] := (*WARN CONV CAST*)SHORT(CHR(y - 10 + ORD('A')))
+			END;
+			x := x DIV 10H;
+			INC(i)
+		UNTIL (x = 0) OR (i = maxw);
+		WHILE w > i DO
+			SELF.Char(filler);
+			DEC(w)
+		END;
+		REPEAT
+			DEC(i);
+			SELF.Char(a[i])
+		UNTIL i = 0
+	END Hex;
+
+	PROCEDURE (SELF: Writer) Address* (x : AO.ADDRESS), NEW;
+	BEGIN
+		SELF.Hex(x, (-2) * SIZE(AO.ADDRESS))
+	END Address;
+
+	PROCEDURE (SELF: Writer) Size* (x : AO.SIZE), NEW;
+	BEGIN
+		SELF.Int(x, 0)
+	END Size;
+
+	PROCEDURE (SELF: Writer) Pair (ch : SHORTCHAR; x : AO.SIGNED32), NEW;
+	BEGIN
+		IF ch # 0X THEN
+			SELF.Char(ch)
+		END;
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(ORD("0") + x DIV 10 MOD 10)));
+		SELF.Char((*WARN CONV CAST*)SHORT(CHR(ORD("0") + x MOD 10)))
+	END Pair;
+
+	PROCEDURE (SELF: Writer) Date* (t, d : AO.SIGNED32), NEW;
+		VAR
+			ch: SHORTCHAR;
+	BEGIN
+		IF d # (-1) THEN
+			SELF.Int((*WARN CONV CAST*)LONG(1900 + d DIV 512), 4);
+			SELF.Pair("-", d DIV 32 MOD 16);
+			SELF.Pair("-", d MOD 32);
+			ch := " "
+		ELSE
+			ch := 0X
+		END;
+		IF t # (-1) THEN
+			SELF.Pair(ch, t DIV 4096 MOD 32);
+			SELF.Pair(":", t DIV 64 MOD 64);
+			SELF.Pair(":", t MOD 64)
+		END
+	END Date;
+
+	PROCEDURE (SELF: Writer) Date822* (t, d, tz : AO.SIGNED32), NEW;
+		VAR
+			i, m: AO.SIGNED32;
+			ch: SHORTCHAR;
+	BEGIN
+		IF d # (-1) THEN
+			SELF.Int((*WARN CONV CAST*)LONG(d MOD 32), 2);
+			m := (d DIV 32 MOD 16 - 1) * 4;
+			FOR i := m TO m + 3 DO
+				SELF.Char(months[i])
+			END;
+			SELF.Int((*WARN CONV CAST*)LONG(1900 + d DIV 512), 5);
+			ch := " "
+		ELSE
+			ch := 0X
+		END;
+		IF t # (-1) THEN
+			SELF.Pair(ch, t DIV 4096 MOD 32);
+			SELF.Pair(":", t DIV 64 MOD 64);
+			SELF.Pair(":", t MOD 64);
+			ch := " "
+		ELSE
+
+		END;
+		IF tz # (-1) THEN
+			IF ch # 0X THEN
+				SELF.Char(ch)
+			END;
+			IF tz >= 0 THEN
+				SELF.Pair("+", tz DIV 60)
+			ELSE
+				SELF.Pair("-", ((-tz)) DIV 60)
+			END;
+			SELF.Pair(0X, ABS(tz) MOD 60)
+		END
+	END Date822;
+
+	PROCEDURE (SELF: Writer) Float* (x : AO.FLOAT64; n : INTEGER), NEW;
+		VAR
+			buf: ARRAY 32 OF SHORTCHAR;
+	BEGIN
+		WHILE (n > 31) DO
+			SELF.Char(" ");
+			DEC(n)
+		END;
+		RC.RealToString(x, n, buf);
+		SELF.String(buf)
+	END Float;
+
+	PROCEDURE (SELF: Writer) FloatFix* (x : AO.FLOAT64; n, f, D : INTEGER), NEW;
+		VAR
+			buf: ARRAY 512 OF SHORTCHAR;
+	BEGIN
+		RC.RealToStringFix(x, n, f, D, buf);
+		SELF.String(buf)
+	END FloatFix;
+
+	PROCEDURE (SELF: Writer) RawChar16* (x : Char16): BOOLEAN, NEW;
+	BEGIN
+		IF (SELF.byteOrder = ByteOrder_LittleEndian) THEN
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED16(x))));
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED16(AO.UDiv16(x, AO.TOUNSIGNED16(100H))))))
+		ELSE
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED16(AO.UDiv16(x, AO.TOUNSIGNED16(100H))))));
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED16(x))))
+		END;
+		RETURN SELF.res = Ok
+	END RawChar16;
+
+	PROCEDURE (SELF: Writer) UTF8Char* (ucs : Char32): BOOLEAN, NEW;
+
+	BEGIN
+		IF ((ucs) <= 7FH) THEN
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ucs)))
+		ELSIF ((ucs) <= 7FFH) THEN
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ASH(ucs, -6) + 0C0H)));
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ucs MOD 40H + 80H)))
+		ELSIF ((ucs) <= 0D7FFH) OR ((0E000H) <= (ucs)) & ((ucs) <= 0FFFFH) THEN
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ASH(ucs, -12) + 0E0H)));
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ASH(ucs, -6) MOD 40H + 80H)));
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ucs MOD 40H + 80H)))
+		ELSIF (0FFFFH < (ucs)) & ((ucs) <= 10FFFFH) THEN
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ASH(ucs, -18) + 0F0H)));
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ASH(ucs, -12) MOD 40H + 80H)));
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ASH(ucs, -6) MOD 40H + 80H)));
+			SELF.Char((*WARN CONV CAST*)SHORT(CHR(ucs MOD 40H + 80H)))
+		ELSE
+			RETURN FALSE
+		END;
+		RETURN SELF.res = Ok
+	END UTF8Char;
+
+	PROCEDURE (SELF: Writer) UTF16Char* (ucs : Char32): BOOLEAN, NEW;
+	BEGIN
+		IF ((ucs) <= 0FFFFH) THEN
+			RETURN SELF.RawChar16(AO.SHORT32(AO.TOUNSIGNED32(ucs)))
+		ELSIF ((ucs) <= 10FFFFH) THEN
+			RETURN SELF.RawChar16(AO.SHORT32(AO.TOUNSIGNED32(ASH(ucs, -10) + 0D7C0H))) & SELF.RawChar16(AO.SHORT32(AO.TOUNSIGNED32(ORD(BITS(ucs) * BITS(3FFH) + BITS(0DC00H)))))
+		END;
+		RETURN FALSE
+	END UTF16Char;
+
+	PROCEDURE (SELF: Writer) UTF32Char* (ucs : Char32): BOOLEAN, NEW;
+
+	BEGIN
+		IF ((ucs) <= 10FFFFH) THEN
+			IF (SELF.byteOrder = ByteOrder_LittleEndian) THEN
+				RETURN SELF.RawChar16(AO.SHORT32(AO.TOUNSIGNED32(ucs MOD 10000H))) & SELF.RawChar16(AO.SHORT32(AO.TOUNSIGNED32(ucs DIV 10000H)))
+			ELSE
+				RETURN SELF.RawChar16(AO.SHORT32(AO.TOUNSIGNED32(ucs DIV 10000H))) & SELF.RawChar16(AO.SHORT32(AO.TOUNSIGNED32(ucs MOD 10000H)))
+			END
+		END;
+		RETURN FALSE
+	END UTF32Char;
+
+	PROCEDURE (SELF: StringWriterSender) Send* (IN buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE; propagate : BOOLEAN; VAR res : INTEGER);
+	BEGIN
+		res := StringFull
+	END Send;
+
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: Writer) InitWriter* (send : Sender; size : AO.SIZE), NEW;
+	BEGIN
+		ASSERT(send # NIL);
+		IF (SELF.buf = NIL) OR (LEN(SELF.buf) # size) THEN
+			NEW(SELF.buf, size)
+		END;
+		SELF.send := send;
+		SELF.Reset;
+		SELF.byteOrder := ByteOrder_LittleEndian
+	END InitWriter;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: StringWriter) InitStringWriter* (size : AO.SIZE), NEW;
+		VAR sws: StringWriterSender;
+	BEGIN
+				NEW(sws);
+				sws.writer := SELF;
+		SELF.InitWriter(sws, size)
+	END InitStringWriter;
+
+	PROCEDURE (SELF: StringWriter) CanSetPos* (): BOOLEAN;
+	BEGIN
+		RETURN TRUE
+	END CanSetPos;
+
+	PROCEDURE (SELF: StringWriter) SetPos* (pos : Position);
+	BEGIN
+		IF pos > LEN(SELF.buf) THEN
+			SELF.tail := LEN(SELF.buf)
+		ELSE
+			SELF.tail := SHORT(pos)
+		END;
+		SELF.sent := 0;
+		SELF.res := Ok
+	END SetPos;
+
+	PROCEDURE (SELF: StringWriter) Update* ;
+	END Update;
+
+	PROCEDURE (SELF: StringWriter) Get* (VAR s : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			i, m: AO.SIZE;
+	BEGIN
+		m := LEN(s) - 1;
+		i := 0;
+		WHILE (i # SELF.tail) & (i < m) DO
+			s[i] := SELF.buf[i];
+			INC(i)
+		END;
+		s[i] := 0X;
+		SELF.tail := 0;
+		SELF.res := Ok
+	END Get;
+
+	PROCEDURE (SELF: StringWriter) GetRaw* (VAR s : ARRAY OF SHORTCHAR; VAR len : AO.SIZE), NEW;
+		VAR
+			i, m: AO.SIZE;
+	BEGIN
+		m := LEN(s);
+		i := 0;
+		WHILE (i # SELF.tail) & (i < m) DO
+			s[i] := SELF.buf[i];
+			INC(i)
+		END;
+		len := i;
+		SELF.tail := 0;
+		SELF.res := Ok
+	END GetRaw;
+
+
+	PROCEDURE (SELF: Reader) Reset* , NEW;
+	BEGIN
+		SELF.head := 0;
+		SELF.tail := 0;
+		SELF.res := Ok;
+		SELF.received := (*WARN CONV CAST*)LONG(0)
+	END Reset;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: Reader) InitReader* (receive : Receiver; size : AO.SIZE), NEW;
+	BEGIN
+		ASSERT(receive # NIL);
+		IF (SELF.buf = NIL) OR (LEN(SELF.buf) # size) THEN
+			NEW(SELF.buf, size)
+		END;
+		SELF.receive := receive;
+		SELF.Reset;
+		SELF.byteOrder := ByteOrder_LittleEndian
+	END InitReader;
+
+
+	PROCEDURE (SELF: Reader) CanSetPos* (): BOOLEAN, NEW, EXTENSIBLE;
+	BEGIN
+		RETURN FALSE
+	END CanSetPos;
+
+	PROCEDURE (SELF: Reader) SetPos* (pos : Position), NEW, EXTENSIBLE;
+	BEGIN
+		HALT(123)
+	END SetPos;
+
+	PROCEDURE (SELF: Reader) Available* (): AO.SIZE, NEW;
+		VAR
+			n: AO.SIZE;
+	BEGIN
+		IF (SELF.res = Ok) THEN
+			IF (SELF.head = SELF.tail) THEN
+				SELF.head := 0;
+				SELF.receive.Receive(SELF.buf^, 0, LEN(SELF.buf), 0, SELF.tail, SELF.res);
+				INC(SELF.received, SELF.tail)
+			ELSIF (SELF.tail # LEN(SELF.buf)) THEN
+				SELF.receive.Receive(SELF.buf^, SELF.tail, LEN(SELF.buf) - SELF.tail, 0, n, SELF.res);
+				INC(SELF.tail, n);
+				INC(SELF.received, n)
+			END;
+			IF SELF.res = EOF THEN
+				SELF.res := Ok
+			END
+		END;
+		RETURN SELF.tail - SELF.head
+	END Available;
+
+	PROCEDURE (SELF: Reader) Pos* (): Position, NEW;
+	BEGIN
+		RETURN SELF.received - (SELF.tail - SELF.head)
+	END Pos;
+
+	PROCEDURE (SELF: Reader) SetByteOrder* (order : ByteOrder), NEW;
+	BEGIN
+		SELF.byteOrder := order
+	END SetByteOrder;
+
+	PROCEDURE (SELF: Reader) Char* (VAR x : SHORTCHAR), NEW;
+	BEGIN
+		IF (SELF.head = SELF.tail) & (SELF.res = Ok) THEN
+			SELF.head := 0;
+			SELF.receive.Receive(SELF.buf^, 0, LEN(SELF.buf), 1, SELF.tail, SELF.res);
+			INC(SELF.received, SELF.tail)
+		END;
+		IF SELF.res = Ok THEN
+			x := SELF.buf[SELF.head];
+			INC(SELF.head)
+		ELSE
+			x := 0X
+		END
+	END Char;
+
+	PROCEDURE (SELF: Reader) Get* (): SHORTCHAR, NEW;
+	BEGIN
+		IF (SELF.head = SELF.tail) & (SELF.res = Ok) THEN
+			SELF.head := 0;
+			SELF.receive.Receive(SELF.buf^, 0, LEN(SELF.buf), 1, SELF.tail, SELF.res);
+			INC(SELF.received, SELF.tail)
+		END;
+		IF SELF.res = Ok THEN
+			INC(SELF.head);
+			RETURN SELF.buf[SELF.head - 1]
+		ELSE
+			RETURN 0X
+		END
+	END Get;
+
+	PROCEDURE (SELF: Reader) Peek* (): SHORTCHAR, NEW;
+	BEGIN
+		IF (SELF.head = SELF.tail) & (SELF.res = Ok) THEN
+			SELF.head := 0;
+			SELF.receive.Receive(SELF.buf^, 0, LEN(SELF.buf), 1, SELF.tail, SELF.res);
+			INC(SELF.received, SELF.tail);
+			IF SELF.res = EOF THEN
+				SELF.res := Ok;
+				SELF.tail := 0;
+				RETURN 0X
+			END
+		END;
+		IF SELF.res = Ok THEN
+			RETURN SELF.buf[SELF.head]
+		ELSE
+			RETURN 0X
+		END
+	END Peek;
+
+	PROCEDURE (SELF: Reader) Bytes* (VAR x : ARRAY OF SHORTCHAR; ofs, size : AO.SIZE; VAR len : AO.SIZE), NEW;
+		VAR
+			n: AO.SIZE;
+	BEGIN
+		ASSERT(size >= 0);
+		len := 0;
+		LOOP
+			n := SELF.tail - SELF.head;
+			IF n = 0 THEN
+				SELF.head := 0;
+				IF SELF.res = Ok THEN
+					SELF.receive.Receive(SELF.buf^, 0, LEN(SELF.buf), 1, SELF.tail, SELF.res);
+					INC(SELF.received, SELF.tail)
+				END;
+				IF SELF.res # Ok THEN
+					WHILE size # 0 DO
+						x[ofs] := 0X;
+						INC(ofs);
+						DEC(size)
+					END;
+					IF (SELF.res = EOF) & (len # 0) THEN
+						SELF.res := Ok
+					END;
+					EXIT
+				END;
+				n := SELF.tail
+			END;
+			IF n > size THEN
+				n := size
+			END;
+			ASSERT(ofs + n <= LEN(x));
+			SYSTEM.MOVE(SYSTEM.ADR(SELF.buf[SELF.head]), SYSTEM.ADR(x[ofs]), n);
+			INC(SELF.head, n);
+			INC(len, n);
+			IF size = n THEN
+				EXIT
+			END;
+			INC(ofs, n);
+			DEC(size, n)
+		END
+	END Bytes;
+
+	PROCEDURE (SELF: Reader) SkipBytes* (n : Position), NEW;
+		VAR
+			ch: SHORTCHAR;
+	BEGIN
+		WHILE n > 0 DO
+			ch := SELF.Get();
+			DEC(n)
+		END
+	END SkipBytes;
+
+	PROCEDURE (SELF: Reader) RawSInt* (VAR x : AO.SIGNED8), NEW;
+	BEGIN
+		x := SYSTEM.VAL(AO.SIGNED8, SELF.Get())
+	END RawSInt;
+
+	PROCEDURE (SELF: Reader) RawInt* (VAR x : AO.SIGNED16), NEW;
+		VAR
+			x0, x1: SHORTCHAR;
+	BEGIN
+		x0 := SELF.Get();
+		x1 := SELF.Get();
+		x := SHORT(ORD(x1) * 100H + ORD(x0))
+	END RawInt;
+
+	PROCEDURE (SELF: Reader) RawLInt* (VAR x : AO.SIGNED32), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes4, x), 0, 4, ignore)
+	END RawLInt;
+
+	PROCEDURE (SELF: Reader) RawHInt* (VAR x : AO.SIGNED64), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes8, x), 0, 8, ignore)
+	END RawHInt;
+
+	PROCEDURE (SELF: Reader) RawUInt8* (VAR x : AO.UNSIGNED8), NEW;
+	BEGIN
+		x := SYSTEM.VAL(AO.UNSIGNED8, SELF.Get())
+	END RawUInt8;
+
+	PROCEDURE (SELF: Reader) RawUInt16* (VAR x : AO.UNSIGNED16), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes2, x), 0, 2, ignore)
+	END RawUInt16;
+
+	PROCEDURE (SELF: Reader) RawUInt32* (VAR x : AO.UNSIGNED32), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes4, x), 0, 4, ignore)
+	END RawUInt32;
+
+	PROCEDURE (SELF: Reader) RawUInt64* (VAR x : AO.UNSIGNED64), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes8, x), 0, 8, ignore)
+	END RawUInt64;
+
+PROCEDURE (SELF: Reader) Net32* (): AO.SIGNED32, NEW;
+	BEGIN
+		RETURN LONG(ORD(SELF.Get())) * 1000000H + LONG(ORD(SELF.Get())) * 10000H + LONG(ORD(SELF.Get())) * 100H + LONG(ORD(SELF.Get()))
+	END Net32;
+
+	PROCEDURE (SELF: Reader) Net64* (): AO.SIGNED64, NEW;
+	BEGIN
+		RETURN SELF.Net32() * 100000000 + SELF.Net32()
+	END Net64;
+
+	PROCEDURE (SELF: Reader) UNet32* (): AO.UNSIGNED32, NEW;
+	BEGIN
+		RETURN AO.UAdd32(AO.UMul32(AO.TOUNSIGNED32(ORD(SELF.Get())), AO.TOUNSIGNED32(1000000H)), AO.TOUNSIGNED32(ORD(SELF.Get()) * (10000H) + (ORD(SELF.Get())) * 100H + (ORD(SELF.Get()))))
+	END UNet32;
+
+	PROCEDURE (SELF: Reader) UNet64* (): AO.UNSIGNED64, NEW;
+			VAR high, low : AO.UNSIGNED32;
+	BEGIN
+				high:=SELF.UNet32();
+				low:=SELF.UNet32();
+		RETURN AO.CDQ(low,high)
+	END UNet64;
+
+	PROCEDURE (SELF: Reader) Net16* (): AO.SIGNED32, NEW;
+	BEGIN
+		RETURN LONG(ORD(SELF.Get())) * 100H + LONG(ORD(SELF.Get()))
+	END Net16;
+
+	PROCEDURE (SELF: Reader) UNet16* (): AO.UNSIGNED16, NEW;
+	BEGIN
+		RETURN AO.TOUNSIGNED16(SHORT(ORD(SELF.Get()) * 100H + ORD(SELF.Get())))
+	END UNet16;
+
+	PROCEDURE (SELF: Reader) Net8* (): AO.SIGNED32, NEW;
+	BEGIN
+		RETURN LONG(ORD(SELF.Get()))
+	END Net8;
+
+	PROCEDURE (SELF: Reader) UNet8* (): AO.UNSIGNED8, NEW;
+	BEGIN
+		RETURN AO.TOUNSIGNED8(SYSTEM.VAL(AO.SIGNED8, SELF.Get()))
+	END UNet8;
+
+	PROCEDURE (SELF: Reader) RawSet32* (VAR x : SET), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes4, x), 0, 4, ignore)
+	END RawSet32;
+
+	PROCEDURE (SELF: Reader) RawSet* (VAR x : SET), NEW;
+		VAR
+			lx: SET;
+	BEGIN
+		SELF.RawSet32(lx);
+		x := lx
+	END RawSet;
+
+
+	PROCEDURE (SELF: Reader) RawSet64* (VAR x : AO.SET64), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes8, x), 0, 8, ignore)
+	END RawSet64;
+
+	PROCEDURE (SELF: Reader) RawBool* (VAR x : BOOLEAN), NEW;
+	BEGIN
+		x := (SELF.Get() # 0X)
+	END RawBool;
+
+	PROCEDURE (SELF: Reader) RawReal* (VAR x : AO.FLOAT32), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes4, x), 0, 4, ignore)
+	END RawReal;
+
+	PROCEDURE (SELF: Reader) RawLReal* (VAR x : AO.FLOAT64), NEW;
+		VAR
+			ignore: AO.SIZE;
+	BEGIN
+		SELF.Bytes(SYSTEM.VAL(Bytes8, x), 0, 8, ignore)
+	END RawLReal;
+
+	PROCEDURE (SELF: Reader) RawString* (VAR x : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			i, m: AO.SIZE;
+			ch: SHORTCHAR;
+	BEGIN
+		i := 0;
+		m := LEN(x) - 1;
+		LOOP
+			ch := SELF.Get();
+			IF ch = 0X THEN
+				EXIT
+			END;
+			IF i < m THEN
+				x[i] := ch;
+				INC(i)
+			END
+		END;
+		x[i] := 0X
+	END RawString;
+
+	PROCEDURE (SELF: Reader) RawNum* (VAR x : AO.SIGNED32), NEW;
+		VAR
+			ch: SHORTCHAR;
+			n, y: AO.SIGNED32;
+	BEGIN
+		n := 0;
+		y := 0;
+		ch := SELF.Get();
+		WHILE ch >= 80X DO
+			INC(y, SYSTEM.LSH((ORD(ch)) - 128, n));
+			INC(n, 7);
+			ch := SELF.Get()
+		END;
+		x := ASH(SYSTEM.LSH((ORD(ch)), 25), n - 25) + y
+	END RawNum;
+
+	PROCEDURE (SELF: Reader) RawHNum* (VAR x : AO.SIGNED64), NEW;
+		VAR
+			ch: SHORTCHAR;
+			n, y: AO.SIGNED64;
+	BEGIN
+		n := (*WARN CONV CAST*)LONG(0);
+		y := (*WARN CONV CAST*)LONG(0);
+		ch := SELF.Get();
+		WHILE ch >= 80X DO
+			INC(y, AO.TOSIGNED64(AO.ULSH64(AO.TOUNSIGNED64(LONG(ORD(ch) - 128)), SHORT(n))));
+			INC(n, 7);
+			ch := SELF.Get()
+		END;
+		x := ASH(SYSTEM.LSH(LONG(ORD(ch)), 57), n - 57) + y
+	END RawHNum;
+
+	PROCEDURE (SELF: Reader) RawSize* (VAR x : AO.SIZE), NEW;
+		VAR
+			ch: SHORTCHAR;
+			n, y: AO.SIZE;
+	BEGIN
+		n := 0;
+		y := 0;
+		ch := SELF.Get();
+		WHILE ch >= 80X DO
+			INC(y, SYSTEM.LSH((ORD(ch)) - 128, n));
+			INC(n, 7);
+			ch := SELF.Get()
+		END;
+		x := ASH(SYSTEM.LSH((ORD(ch)), SIZE(AO.SIZE) * 8 - 7), n - (SIZE(AO.SIZE) * 8 - 7)) + y
+	END RawSize;
+
+	PROCEDURE (SELF: Reader) Int* (VAR x : AO.SIGNED32; hex : BOOLEAN), NEW;
+		VAR
+			vd, vh: AO.SIGNED32;
+			sgn, d: INTEGER;
+			ch: SHORTCHAR;
+			ok: BOOLEAN;
+	BEGIN
+		vd := 0;
+		vh := 0;
+		sgn := 1;
+		ok := FALSE;
+		IF SELF.Peek() = "-" THEN
+			sgn := (-1);
+			ch := SELF.Get()
+		END;
+		LOOP
+			ch := SELF.Peek();
+			IF (ch >= "0") & (ch <= "9") THEN
+				d := ORD(ch) - ORD("0")
+			ELSIF hex & (CAP(ch) >= "A") & (CAP(ch) <= "F") THEN
+				d := ORD(CAP(ch)) - ORD("A") + 10
+			ELSE
+				EXIT
+			END;
+			vd := 10 * vd + d;
+			vh := 16 * vh + d;
+			ch := SELF.Get();
+			ok := TRUE
+		END;
+		IF hex & (CAP(ch) = "H") THEN
+			vd := vh;
+			ch := SELF.Get()
+		END;
+		x := sgn * vd;
+		IF (SELF.res = 0) & ~ok THEN
+			SELF.res := FormatError
+		END
+	END Int;
+
+	PROCEDURE (SELF: Reader) HInt* (VAR x : AO.SIGNED64; hex : BOOLEAN), NEW;
+		VAR
+			vd, vh: AO.SIGNED64;
+			sgn, d: INTEGER;
+			ch: SHORTCHAR;
+			ok: BOOLEAN;
+	BEGIN
+		vd := (*WARN CONV CAST*)LONG(0);
+		vh := (*WARN CONV CAST*)LONG(0);
+		sgn := 1;
+		ok := FALSE;
+		IF SELF.Peek() = "-" THEN
+			sgn := (-1);
+			ch := SELF.Get()
+		END;
+		LOOP
+			ch := SELF.Peek();
+			IF (ch >= "0") & (ch <= "9") THEN
+				d := ORD(ch) - ORD("0")
+			ELSIF hex & (CAP(ch) >= "A") & (CAP(ch) <= "F") THEN
+				d := ORD(CAP(ch)) - ORD("A") + 10
+			ELSE
+				EXIT
+			END;
+			vd := 10 * vd + d;
+			vh := 16 * vh + d;
+			ch := SELF.Get();
+			ok := TRUE
+		END;
+		IF hex & (CAP(ch) = "H") THEN
+			vd := vh;
+			ch := SELF.Get()
+		END;
+		x := sgn * vd;
+		IF (SELF.res = 0) & ~ok THEN
+			SELF.res := FormatError
+		END
+	END HInt;
+
+	PROCEDURE (SELF: Reader) Size* (VAR x : AO.SIZE; hex : BOOLEAN), NEW;
+		VAR
+			vd, vh: AO.SIZE;
+			d: INTEGER;
+			ch: SHORTCHAR;
+			ok: BOOLEAN;
+	BEGIN
+		vd := 0;
+		vh := 0;
+		ok := FALSE;
+		LOOP
+			ch := SELF.Peek();
+			IF (ch >= "0") & (ch <= "9") THEN
+				d := ORD(ch) - ORD("0")
+			ELSIF hex & (CAP(ch) >= "A") & (CAP(ch) <= "F") THEN
+				d := ORD(CAP(ch)) - ORD("A") + 10
+			ELSE
+				EXIT
+			END;
+			vd := 10 * vd + d;
+			vh := 16 * vh + d;
+			ch := SELF.Get();
+			ok := TRUE
+		END;
+		IF hex & (CAP(ch) = "H") THEN
+			vd := vh;
+			ch := SELF.Get()
+		END;
+		x := vd;
+		IF (SELF.res = 0) & ~ok THEN
+			SELF.res := FormatError
+		END
+	END Size;
+
+	PROCEDURE (SELF: Reader) EOLN* (): BOOLEAN, NEW;
+		VAR
+			ch: SHORTCHAR;
+	BEGIN
+		ch := SELF.Peek();
+		RETURN (ch = CR) OR (ch = LF) OR (SELF.res # Ok)
+	END EOLN;
+
+	PROCEDURE (SELF: Reader) Ln* (VAR x : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			i, m: AO.SIZE;
+			ch: SHORTCHAR;
+	BEGIN
+		i := 0;
+		m := LEN(x) - 1;
+		LOOP
+			ch := SELF.Peek();
+			IF (ch = CR) OR (ch = LF) OR (SELF.res # Ok) THEN
+				EXIT
+			END;
+			IF i < m THEN
+				x[i] := ch;
+				INC(i)
+			END;
+			ch := SELF.Get()
+		END;
+		x[i] := 0X;
+		IF ch = CR THEN
+			ch := SELF.Get()
+		END;
+		IF SELF.Peek() = LF THEN
+			ch := SELF.Get()
+		END
+	END Ln;
+
+	PROCEDURE (SELF: Reader) LnEOT* (VAR x : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			i, m: AO.SIZE;
+			ch: SHORTCHAR;
+	BEGIN
+		i := 0;
+		m := LEN(x) - 1;
+		LOOP
+			ch := SELF.Peek();
+			IF (ch = CR) OR (ch = LF) OR (ch = EOT) OR (SELF.res # Ok) THEN
+				EXIT
+			END;
+			IF i < m THEN
+				x[i] := ch;
+				INC(i)
+			END;
+			ch := SELF.Get()
+		END;
+		x[i] := 0X;
+		IF ch = CR THEN
+			ch := SELF.Get()
+		END;
+		IF SELF.Peek() = LF THEN
+			ch := SELF.Get()
+		END;
+		IF ch = EOT THEN
+			ch := SELF.Get()
+		END
+	END LnEOT;
+
+	PROCEDURE (SELF: Reader) SkipLn* , NEW;
+		VAR
+			ch: SHORTCHAR;
+	BEGIN
+		LOOP
+			ch := SELF.Peek();
+			IF (ch = CR) OR (ch = LF) OR (SELF.res # Ok) THEN
+				EXIT
+			END;
+			ch := SELF.Get()
+		END;
+		IF ch = CR THEN
+			ch := SELF.Get()
+		END;
+		IF SELF.Peek() = LF THEN
+			ch := SELF.Get()
+		END
+	END SkipLn;
+
+	PROCEDURE (SELF: Reader) SkipSpaces* , NEW;
+		VAR
+			ch: SHORTCHAR;
+	BEGIN
+		LOOP
+			ch := SELF.Peek();
+			IF (ch # TAB) & (ch # SP) THEN
+				EXIT
+			END;
+			ch := SELF.Get()
+		END
+	END SkipSpaces;
+
+	PROCEDURE (SELF: Reader) SkipWhitespace* , NEW;
+		VAR
+			ch: SHORTCHAR;
+	BEGIN
+		LOOP
+			ch := SELF.Peek();
+			IF (ch # SP) & (ch # CR) & (ch # LF) & (ch # TAB) THEN
+				EXIT
+			END;
+			ch := SELF.Get()
+		END
+	END SkipWhitespace;
+
+	PROCEDURE (SELF: Reader) Token* (VAR token : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			j, max: AO.SIZE;
+			ch: SHORTCHAR;
+	BEGIN
+		j := 0;
+		max := LEN(token) - 1;
+		LOOP
+			ch := SELF.Peek();
+			IF (ch = SP) OR (ch = CR) OR (ch = LF) OR (ch = TAB) OR (SELF.res # Ok) THEN
+				EXIT
+			END;
+			IF j < max THEN
+				token[j] := ch;
+				INC(j)
+			END;
+			ch := SELF.Get()
+		END;
+		token[j] := 0X
+	END Token;
+
+	PROCEDURE (SELF: Reader) String* (VAR string : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			c, delimiter: SHORTCHAR;
+			i, len: AO.SIZE;
+	BEGIN
+		c := SELF.Peek();
+		IF (c # "'") & (c # '"') THEN
+			SELF.Token(string)
+		ELSE
+			delimiter := SELF.Get();
+			c := SELF.Peek();
+			i := 0;
+			len := LEN(string) - 1;
+			WHILE (i < len) & (c # delimiter) & (c # CR) & (c # LF) & (SELF.res = Ok) DO
+				string[i] := SELF.Get();
+				INC(i);
+				c := SELF.Peek()
+			END;
+			IF (c = delimiter) THEN
+				c := SELF.Get()
+			END;
+			string[i] := 0X
+		END
+	END String;
+
+	PROCEDURE (SELF: Reader) GetString* (VAR string : ARRAY OF SHORTCHAR): BOOLEAN, NEW;
+		VAR
+			c: SHORTCHAR;
+	BEGIN
+		SELF.SkipWhitespace;
+		c := SELF.Peek();
+		SELF.String(string);
+		RETURN (string[0] # 0X) OR (c = "'") OR (c = '"')
+	END GetString;
+
+	PROCEDURE (SELF: Reader) GetInteger* (VAR integer : AO.SIGNED32; isHexadecimal : BOOLEAN): BOOLEAN, NEW;
+
+	BEGIN
+		SELF.SkipWhitespace;
+		SELF.Int(integer, isHexadecimal);
+		RETURN SELF.res = Ok
+	END GetInteger;
+
+	PROCEDURE (SELF: Reader) GetSize* (VAR size : AO.SIZE; isHexadecimal : BOOLEAN): BOOLEAN, NEW;
+	BEGIN
+		SELF.SkipWhitespace;
+		SELF.Size(size, isHexadecimal);
+		RETURN SELF.res = Ok
+	END GetSize;
+
+	PROCEDURE (SELF: ReaderPeekNext) Do (): SHORTCHAR;
+			VAR IGNORE:SHORTCHAR;
+	BEGIN
+		IGNORE := SELF.reader.Get();
+		RETURN SELF.reader.Peek()
+	END Do;
+
+	PROCEDURE (SELF: Reader) GetReal* (VAR real : AO.FLOAT64): BOOLEAN, NEW;
+		VAR
+			c: SHORTCHAR;
+						rpn: ReaderPeekNext;
+	BEGIN
+				NEW(rpn);
+				rpn.reader := SELF;
+		SELF.SkipWhitespace;
+		c := SELF.Peek();
+		RETURN RC.ScanReal(SELF.Peek(), rpn, real)
+	END GetReal;
+
+	PROCEDURE (SELF: Reader) GetChar* (VAR ch : SHORTCHAR): BOOLEAN, NEW;
+
+	BEGIN
+		SELF.SkipWhitespace;
+		SELF.Char(ch);
+		RETURN ch # 0X
+	END GetChar;
+
+	PROCEDURE (SELF: Reader) RawChar16* (VAR u16 : Char16): BOOLEAN, NEW;
+		VAR
+			b0, b1: SHORTCHAR;
+	BEGIN
+		u16 := AO.TOUNSIGNED16(SHORT(0));
+		SELF.Char(b0);
+		SELF.Char(b1);
+		IF (SELF.res = Ok) THEN
+			IF (SELF.byteOrder = ByteOrder_LittleEndian) THEN
+				u16 := AO.TOUNSIGNED16(SHORT(ORD(b1) * 100H + ORD(b0)))
+			ELSE
+				u16 := AO.TOUNSIGNED16(SHORT(ORD(b0) * 100H + ORD(b1)))
+			END;
+			RETURN TRUE
+		END;
+		RETURN FALSE
+	END RawChar16;
+
+	PROCEDURE (SELF: Reader) UTF8Char* (VAR ucs : Char32): BOOLEAN, NEW;
+		VAR
+			u32: Char32;
+			isValid: BOOLEAN;
+	BEGIN
+		isValid := FALSE;
+		ucs := 0;
+		u32 := ORD(SELF.Get());
+		IF (SELF.res = Ok) THEN
+			IF (u32 < 80H) THEN
+				isValid := TRUE
+			ELSIF (u32 < 0E0H) THEN
+				u32 := SYSTEM.LSH(u32 MOD 20H, 6) + ORD(SELF.Get()) MOD 40H;
+				isValid := u32 >= 80H
+			ELSIF (u32 < 0F0H) THEN
+				u32 := SYSTEM.LSH(u32 MOD 10H, 12) + SYSTEM.LSH(ORD(SELF.Get()) MOD 40H, 6) + ORD(SELF.Get()) MOD 40H;
+				isValid := u32 >= 800H
+			ELSE
+				u32 := SYSTEM.LSH(u32 MOD 8, 18) + SYSTEM.LSH(ORD(SELF.Get()) MOD 40H, 12) + SYSTEM.LSH(ORD(SELF.Get()) MOD 40H, 6) + ORD(SELF.Get()) MOD 40H;
+				isValid := u32 >= 10000H
+			END
+		END;
+		IF (SELF.res = Ok) & isValid THEN
+			ucs := u32;
+			RETURN TRUE
+		END;
+		RETURN FALSE
+	END UTF8Char;
+
+	PROCEDURE (SELF: Reader) UTF16Char* (VAR ucs : Char32): BOOLEAN, NEW;
+		VAR
+			u0, u1: Char16;
+						SURROGATEOFFSET : INTEGER;
+	BEGIN
+				SURROGATEOFFSET := SYSTEM.LSH(0D800H, 10) + 0DC00H - 10000H;
+		ucs := 0;
+		IF SELF.RawChar16(u0) THEN
+			IF (BITS(AO.TOSIGNED16(u0)) * BITS(0FC00H) # BITS(0D800H)) THEN
+				ucs := (*WARN CONV CAST*)AO.TOSIGNED16(u0);
+				RETURN TRUE
+			ELSE
+				IF SELF.RawChar16(u1) & (BITS(AO.TOSIGNED16(u1)) * BITS(0FC00H) = BITS(0DC00H)) THEN
+					ucs := SYSTEM.LSH(AO.TOSIGNED16(u0), 10) + AO.TOSIGNED16(u1) - (SURROGATEOFFSET);
+					RETURN TRUE
+				END
+			END
+		END;
+		RETURN FALSE
+	END UTF16Char;
+
+	PROCEDURE (SELF: Reader) UTF32Char* (VAR ucs : Char32): BOOLEAN, NEW;
+		VAR
+			u0, u1: Char16;
+			temp: Char32;
+	BEGIN
+		ucs := 0;
+		IF SELF.RawChar16(u0) & SELF.RawChar16(u1) THEN
+			IF (SELF.byteOrder = ByteOrder_LittleEndian) THEN
+				temp := AO.TOSIGNED16(u1) * 10000H + AO.TOSIGNED16(u0)
+			ELSE
+				temp := AO.TOSIGNED16(u0) * 10000H + AO.TOSIGNED16(u1)
+			END;
+			IF AO.ULeq32(AO.TOUNSIGNED32(temp),AO.TOUNSIGNED32(10FFFFH)) THEN
+				ucs := temp;
+				RETURN TRUE
+			END
+		END;
+		RETURN FALSE
+	END UTF32Char;
+
+	PROCEDURE (SELF: StringReaderReceiver) Receive (VAR buf : ARRAY OF SHORTCHAR; ofs, size, min : AO.SIZE; VAR len : AO.SIZE; VAR res : INTEGER);
+
+	BEGIN
+		IF min = 0 THEN
+			res := Ok
+		ELSE
+			res := EOF
+		END;
+		len := 0
+	END Receive;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: StringReader) InitStringReader* (size : AO.SIZE), NEW;
+			VAR srr:StringReaderReceiver;
+	BEGIN
+				NEW(srr);srr.reader := SELF;
+		SELF.InitReader(srr, size)
+	END InitStringReader;
+
+	PROCEDURE (SELF: StringReader) CanSetPos* (): BOOLEAN;
+
+	BEGIN
+		RETURN TRUE
+	END CanSetPos;
+
+	PROCEDURE (SELF: StringReader) SetPos* (pos : Position);
+	BEGIN
+		IF pos > LEN(SELF.buf) THEN
+			SELF.head := LEN(SELF.buf)
+		ELSE
+			SELF.head := SHORT(pos)
+		END;
+		SELF.tail := LEN(SELF.buf);
+		SELF.received := LEN(SELF.buf);
+		SELF.res := Ok
+	END SetPos;
+
+
+	PROCEDURE (SELF: StringReader) Set* (IN s : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			len: AO.SIZE;
+	BEGIN
+		len := 0;
+		WHILE s[len] # 0X DO
+			INC(len)
+		END;
+		IF len > LEN(SELF.buf) THEN
+			len := LEN(SELF.buf)
+		END;
+		SELF.head := 0;
+		SELF.tail := len;
+		SELF.received := len;
+		SELF.res := Ok;
+		IF len > 0 THEN
+			SYSTEM.MOVE(SYSTEM.ADR(s[0]), SYSTEM.ADR(SELF.buf[0]), len)
+		END
+	END Set;
+
+	PROCEDURE (SELF: StringReader) SetRaw* (IN s : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE), NEW;
+	BEGIN
+		IF len > LEN(SELF.buf) THEN
+			len := LEN(SELF.buf)
+		END;
+		SELF.head := 0;
+		SELF.tail := len;
+		SELF.received := len;
+		SELF.res := Ok;
+		ASSERT((len >= 0) & (ofs + len <= LEN(s)));
+		IF len > 0 THEN
+			SYSTEM.MOVE(SYSTEM.ADR(s[ofs]), SYSTEM.ADR(SELF.buf[0]), len)
+		END
+	END SetRaw;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: Buffer) Init* (initialSize : AO.SIZE), NEW;
+	BEGIN
+		IF initialSize < 16 THEN
+			initialSize := 256
+		END;
+		NEW(SELF.data, initialSize);
+		SELF.length := 0
+	END Init;
+
+	PROCEDURE (SELF: Buffer) Shorten* (n : AO.SIZE), NEW;
+	BEGIN
+		IF SELF.w # NIL THEN
+			SELF.w.Update
+		END;
+		DEC(SELF.length, n);
+		IF SELF.length < 0 THEN
+			SELF.length := 0
+		END;
+		IF SELF.length > 0 THEN
+			SELF.data[SELF.length - 1] := 0X
+		ELSE
+			SELF.data[0] := 0X
+		END
+	END Shorten;
+
+	PROCEDURE (SELF: Buffer) Clear* , NEW;
+	BEGIN
+		SELF.data[0] := 0X;
+		SELF.length := 0
+	END Clear;
+
+	PROCEDURE (SELF: Buffer) Add* (IN buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE; propagate : BOOLEAN; VAR res : INTEGER), NEW;
+		VAR
+			newSize, i: AO.SIZE;
+			n: String;
+	BEGIN
+		IF SELF.length + len + 1 >= LEN(SELF.data) THEN
+			newSize := MAX(LEN(SELF.data) * 2, SELF.length + len + 1);
+			NEW(n, newSize);
+			FOR i := 0 TO SELF.length - 1 DO
+				n[i] := SELF.data[i]
+			END;
+			SELF.data := n
+		END;
+		WHILE len > 0 DO
+			SELF.data[SELF.length] := buf[ofs];
+			INC(ofs);
+			INC(SELF.length);
+			DEC(len)
+		END;
+		SELF.data[SELF.length] := 0X;
+		res := Ok
+	END Add;
+
+		PROCEDURE (SELF: BufferSender) Send* (IN buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE; propagate : BOOLEAN; VAR res : INTEGER);
+		BEGIN
+			SELF.buffer.Add(buf,ofs, len,propagate, res);
+		END Send;
+
+	PROCEDURE (SELF: Buffer) GetWriter* (): Writer, NEW;
+			VAR bs:BufferSender;
+	BEGIN
+				NEW(bs);bs.buffer := SELF;
+		IF SELF.w = NIL THEN
+			NEW(SELF.w); SELF.w.InitWriter(bs, 256)
+		END;
+		RETURN SELF.w
+	END GetWriter;
+
+ 	PROCEDURE OpenStringReader* (VAR b : StringReader; IN string : ARRAY OF SHORTCHAR);
+		VAR
+			len: AO.SIZE;
+	BEGIN
+		len := LEN(string);
+		NEW(b);b.InitStringReader(len);
+		b.SetRaw(string, 0, len)
+	END OpenStringReader;
+
+	PROCEDURE (SELF: Buffer) GetReader* (): StringReader, NEW;
+			VAR RESULT:StringReader;
+	BEGIN
+		IF SELF.w # NIL THEN
+			SELF.w.Update
+		END;
+		OpenStringReader(RESULT, SELF.data^);
+		RETURN RESULT
+	END GetReader;
+
+	PROCEDURE (SELF: Buffer) GetLength* (): AO.SIZE, NEW;
+	BEGIN
+		IF SELF.w # NIL THEN
+			SELF.w.Update
+		END;
+		RETURN SELF.length
+	END GetLength;
+
+	PROCEDURE (SELF: Buffer) GetString* (): String, NEW;
+	BEGIN
+		IF SELF.w # NIL THEN
+			SELF.w.Update
+		END;
+		RETURN SELF.data
+	END GetString;
+
+	PROCEDURE (SELF: Buffer) GetStringCopy* (): String, NEW;
+		VAR
+			new: String;
+	BEGIN
+		IF SELF.w # NIL THEN
+			SELF.w.Update
+		END;
+		NEW(new, SELF.length + 1);
+		AO.COPY(SELF.data^, new^);
+		RETURN new
+	END GetStringCopy;
+
+	PROCEDURE (SELF: Buffer) Write* (out : Writer), NEW;
+	BEGIN
+		IF SELF.w # NIL THEN
+			SELF.w.Update
+		END;
+		out.Bytes(SELF.data^, 0, SELF.length)
+	END Write;
+
+	PROCEDURE OpenWriter* (VAR b : Writer; send : Sender);
+	BEGIN
+		NEW(b);b.InitWriter(send, DefaultWriterSize)
+	END OpenWriter;
+
+	PROCEDURE OpenReader* (VAR b : Reader; receive : Receiver);
+	BEGIN
+		NEW(b);b.InitReader( receive, DefaultReaderSize)
+	END OpenReader;
+
+	PROCEDURE OpenStringWriter* (VAR b : StringWriter; size : AO.SIZE);
+	BEGIN
+		NEW(b);b.InitStringWriter(size)
+	END OpenStringWriter;
+
+	PROCEDURE Copy* (r : Reader; w : Writer);
+		VAR
+			char: SHORTCHAR;
+	BEGIN
+		WHILE r.res = Ok DO
+			r.Char(char);
+			IF r.res = Ok THEN
+				w.Char(char)
+			END
+		END
+	END Copy;
+
+BEGIN
+	months := " Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec"
+END CryptoAosStreams.
+
+
+(**
+Notes:
+o	Any single buffer instance must not be accessed by more than one process concurrently.
+o 	The interface is blocking (synchronous).  If an output buffer is full, it is written with a synchronous write, which returns
+	only when all the data has been written.	If an input buffer is empty, it is read with a synchronous read, which only returns
+	once some data has been read.  The only exception is the Available() procedure, which "peeks" at the input stream
+	and returns 0 if no data is currently available.
+o 	All procedures set res to the error code reported by the lower-level I/O operation (non-zero indicates error).
+	 E.g. closing an underlying TCP connection will result in the Read* procedures returning a non-zero error code.
+o 	res is sticky.  Once it becomes non-zero, it remains non-zero.
+o 	The only way to detect end of file is to attempt to read past the end of file, which returns a non-zero error code.
+o 	All output written to an erroneous buffer is ignored.
+o 	The value returned when reading from an erroneous buffer is undefined, except for the Read procedure, which returns 0X.
+o 	ReadBytes sets the len parameter to the number of bytes that were actually read, e.g. if size = 10, and only 8 bytes are read, len is 8.
+o 	Raw format is little-endian 2's complement integers, IEEE reals and 0X-terminated strings.
+o 	Syntax for ReadInt with hex = FALSE: num = ["-"] digit {digit}. digit = "0".."9".
+o 	Syntax for ReadInt with hex = TRUE: ["-"] hexdigit {hexdigit} ["H"|"h"]. hexdigit = digit | "A".."F" | "a".."f".
+o 	ReadInt with hex = TRUE allows "A".."F" as digits, and looks for a "H" character after the number.
+	If present, the number is interpreted as hexadecimal.  If hexadecimal digits are present, but no "H" flag,
+	the resulting decimal value is undefined.
+o 	ReadInt ignores overflow.
+o 	A Sender sends len bytes from buf at ofs to output and returns res non-zero on error.  It waits until all the data is written,
+	or an error occurs.
+o 	A Receiver receives up to size bytes from input into buf at ofs and returns the number of bytes read in len.
+	It returns res non-zero on error.  It waits until at least min bytes (possibly zero) are available, or an error occurs.
+o 	EOLN and ReadLn recognize the following end-of-line characters: CR, LF and CR/LF.
+o 	To read an unstructured file token-by-token: WHILE (r.res = 0) DO SkipWhitespace; ReadToken END
+o 	To read a line structured file token-by-token: WHILE r.res = 0 DO SkipSpaces; WHILE ~EOLN DO ReadToken; SkipSpaces END END
+o 	A string writer is not flushed when it becomes full, but res is set to a non-zero value.
+o 	Update has no effect on a string writer.
+o 	GetString can be called on a string writer to return the buffer contents and reset it to empty.
+o 	GetString always appends a 0X character to the buffer, but returns the true length (excluding the added 0X) in the len parameter,
+	so it can also be used for binary data that includes 0X characters.
+o 	Receive procedure should set res to EOF when attempting to read past the end of file.
+*)
+
+
+(*
+to do:
+o stream byte count
+o read formatted data
+o reads for all formatted writes
+o write reals
+o low-level version that can be used in kernel (below KernelLog)
+*)

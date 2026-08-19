@@ -1,0 +1,967 @@
+MODULE CryptoFieldElement;
+
+(*Port from c#(https://github.com/HirbodBehnam/X25519-CSharp/) by Anton Shelin 2023*)
+(* https://www.rfc-editor.org/rfc/rfc7748 *)
+
+	IMPORT SYSTEM, AO := CryptoAosCompat, StdLog;
+(* PORT FROM csharp port of golang implementation*)
+	(*// Just a note:
+	// I tried to keep this library as close as I can to Golang one. Even I tired to implement some
+	// constant time algorithms. But I don't grantee this to be constant time.
+
+	/// <summary>
+	/// fieldElement represents an element of the field GF(2^255 - 19). An element
+	/// t, entries t[0]...t[9], represents the integer t[0]+2^26 t[1]+2^51 t[2]+2^77
+	/// t[3]+2^102 t[4]+...+2^230 t[9]. Bounds on each t[i] vary depending on
+	/// context.
+	/// </summary> *)
+	CONST
+		Trace = FALSE;
+	TYPE
+		FieldElement* = RECORD 
+			_elements : ARRAY 10 OF INTEGER;
+		END;
+		
+		LongBytes = ARRAY 8 OF SHORTCHAR;(* for casts*)
+		
+		PROCEDURE (VAR e : FieldElement) Init*, NEW;
+			VAR i: INTEGER;
+		BEGIN
+			FOR i:= 0 TO 9 DO e._elements[i] := 0 END;
+		END Init ;
+
+		PROCEDURE Log(fe: FieldElement; name: ARRAY OF SHORTCHAR);
+			VAR i: INTEGER;
+		BEGIN
+			IF Trace THEN
+				StdLog.String(name + ": ");StdLog.Ln;
+				FOR i :=0 TO 9 DO
+					StdLog.Int(fe._elements[i]); StdLog.Ln;
+				END;
+				StdLog.Ln;
+			END;
+		END Log;
+
+		PROCEDURE Load*(IN bytes : ARRAY OF SHORTCHAR; index, count: INTEGER): LONGINT;
+			VAR lb : LongBytes;res : LONGINT;i:INTEGER;
+		BEGIN
+			ASSERT(count <= 8);
+			res := 0L;
+			lb := SYSTEM.VAL(LongBytes, res);	   
+			FOR i := 0  TO (count -1) DO
+				lb[i] := bytes[index + i]
+			END;	 
+			res := SYSTEM.VAL(LONGINT, lb);
+			RETURN res;
+		END Load;
+
+		PROCEDURE (VAR e : FieldElement)  InitFromBytes*(src : ARRAY OF SHORTCHAR), NEW;
+			VAR h0,h1,h2,h3,h4,h5,h6,h7,h8,h9 : LONGINT;
+					carry : ARRAY 10 OF LONGINT;
+		BEGIN
+			h0 := Load(src,0, 4);
+			h1 := ASH(Load(src,4, 3), 6);
+			h2 := ASH(Load(src,7, 3) , 5);
+			h3 := ASH(Load(src,10, 3), 3);
+			h4 := ASH(Load(src,13, 3), 2);
+			h5 := Load(src,16, 4);
+			h6 := ASH(Load(src,20, 3) , 7);
+			h7 := ASH(Load(src,23, 3) ,5);
+			h8 := ASH(Load(src,26, 3) , 4);
+			h9 := ASH(AO.UBitwiseAnd64(Load(src,29, 3), 07FFFFFL), 2);
+
+
+			carry[9] := ASH(h9 + (ASH(1, 24)) , -25);
+			h0 := h0 +carry[9] * 19;
+			h9 := h9 - ASH(carry[9], 25);
+			carry[1] := ASH((h1 + ASH(1, 24)), -25);
+			h2 := h2 +carry[1];
+			h1 := h1 -ASH(carry[1], 25);
+			carry[3] := ASH((h3 + ASH(1, 24)), -25);
+			h4 := h4 +carry[3];
+			h3 := h3 -ASH(carry[3], 25);
+			carry[5] := ASH((h5 + ASH(1, 24)) , -25);
+			h6 := h6 +carry[5];
+			h5 := h5 -ASH(carry[5], 25);
+			carry[7] := ASH((h7 + ASH(1, 24)), -25);
+			h8 := h8 +carry[7];
+			h7 := h7 -ASH(carry[7], 25);
+
+			carry[0] := ASH((h0 + ASH(1, 25)), -26);
+			h1 := h1 +carry[0];
+			h0 := h0 -ASH(carry[0], 26);
+			carry[2] := ASH((h2 + ASH(1, 25)), -26);
+			h3 := h3 +carry[2];
+			h2 := h2 -ASH(carry[2], 26);
+			carry[4] := ASH((h4 + ASH(1, 25)), -26);
+			h5 := h5 +carry[4];
+			h4 := h4 -ASH(carry[4], 26);
+			carry[6] := ASH((h6 + ASH(1, 25)), -26);
+			h7 := h7 +carry[6];
+			h6 := h6 -ASH(carry[6], 26);
+			carry[8] := ASH((h8 + ASH(1, 25)), -26);
+			h9 := h9 +carry[8];
+			h8 := h8 -ASH(carry[8], 26);
+
+			e._elements[0] := SHORT(h0);
+			e._elements[1] := SHORT(h1);
+			e._elements[2] := SHORT(h2);
+			e._elements[3] := SHORT(h3);
+			e._elements[4] := SHORT(h4);
+			e._elements[5] := SHORT(h5);
+			e._elements[6] := SHORT(h6);
+			e._elements[7] := SHORT(h7);
+			e._elements[8] := SHORT(h8);
+			e._elements[9] := SHORT(h9);
+		END InitFromBytes;
+
+		PROCEDURE (VAR e : FieldElement)  SetElementsDirect*(src : ARRAY OF INTEGER), NEW;
+			VAR i: INTEGER;
+		BEGIN
+			FOR i := 0 TO 9 DO
+				e._elements[i] := src[i];
+			END
+		END SetElementsDirect;
+
+		(*/// <summary>
+		/// Converts to a 32 byte array
+		/// </summary>
+		/// <remarks>
+		/// Identical to feToBytes in Golang
+		///   feToBytes marshals h to s.
+		/// Preconditions:
+		/// |h| bounded by 1.1*2^25,1.1*2^24,1.1*2^25,1.1*2^24,etc.
+		/// 
+		/// Write p=2^255-19; q=floor(h/p).
+		/// Basic claim: q = floor(2^(-255)(h + 19 2^(-25)h9 + 2^(-1))).
+		/// 
+		/// Proof:
+		/// Have |h|&lt;=p so |q|&lt;=1 so |19^2 2^(-255) q|&lt;1/4.
+		/// Also have |h-2^230 h9|&lt;2^230 so |19 2^(-255)(h-2^230 h9)|&lt;1/4.
+		/// 
+		/// Write y=2^(-1)-19^2 2^(-255)q-19 2^(-255)(h-2^230 h9).
+		/// Then 0&lt;y&lt;1.
+		/// 
+		/// Write r=h-pq.
+		/// Have 0&lt;=r&lt;=p-1=2^255-20.
+		/// Thus 0&lt;=r+19(2^-255)r&lt;r+19(2^-255)2^255&lt;=2^255-1.
+		/// 
+		/// Write x=r+19(2^-255)r+y.
+		/// Then 0&lt;x&lt;2^255 so floor(2^(-255)x) = 0 so floor(q+2^(-255)x) = q.
+		/// 
+		/// Have q+2^(-255)x = 2^(-255)(h + 19 2^(-25) h9 + 2^(-1))
+		/// so floor(2^(-255)(h + 19 2^(-25) h9 + 2^(-1))) = q.
+		/// </remarks>
+		/// <returns></returns> *)
+		PROCEDURE (VAR e : FieldElement)  ToBytes*(OUT s: ARRAY OF SHORTCHAR), NEW;
+			VAR carry : ARRAY 10 OF INTEGER;
+					q : INTEGER;
+
+		BEGIN
+			ASSERT(LEN(s)=32);
+			q := (ASH((19 * e._elements[9] + ASH(1, 24)) ,-25));
+			q := (ASH((e._elements[0] + q),-26));
+			q := (ASH((e._elements[1] + q),-25));
+			q := (ASH((e._elements[2] + q),-26));
+			q := (ASH((e._elements[3] + q),-25));
+			q := (ASH((e._elements[4] + q),-26));
+			q := (ASH((e._elements[5] + q),-25));
+			q := (ASH((e._elements[6] + q),-26));
+			q := (ASH((e._elements[7] + q),-25));
+			q := (ASH((e._elements[8] + q),-26));
+			q := (ASH((e._elements[9] + q),-25));
+
+			(*// Goal: Output h-(2^255-19)q, which is between 0 and 2^255-20. *)
+			e._elements[0] := e._elements[0] + 19 * q;
+			(*// Goal: Output h-2^255 q, which is between 0 and 2^255-20. *)
+
+			carry[0] := ASH(e._elements[0], -26);
+			e._elements[1] := e._elements[1] +carry[0];
+			e._elements[0] := e._elements[0] -ASH(carry[0], 26);
+			carry[1] := ASH(e._elements[1] , -25);
+			e._elements[2] := e._elements[2] +carry[1];
+			e._elements[1] := e._elements[1] -ASH(carry[1], 25);
+			carry[2] := ASH(e._elements[2], -26);
+			e._elements[3] := e._elements[3] +carry[2];
+			e._elements[2] := e._elements[2] -ASH(carry[2], 26);
+			carry[3] := ASH(e._elements[3], -25);
+			e._elements[4] := e._elements[4] +carry[3];
+			e._elements[3] := e._elements[3] -ASH(carry[3], 25);
+			carry[4] := ASH(e._elements[4], -26);
+			e._elements[5] := e._elements[5] +carry[4];
+			e._elements[4] := e._elements[4] -ASH(carry[4], 26);
+			carry[5] := ASH(e._elements[5], -25);
+			e._elements[6] := e._elements[6] +carry[5];
+			e._elements[5] := e._elements[5] -ASH(carry[5], 25);;
+			carry[6] := ASH(e._elements[6], -26);
+			e._elements[7] := e._elements[7] +carry[6];
+			e._elements[6] := e._elements[6] -ASH(carry[6], 26);
+			carry[7] := ASH(e._elements[7], -25);
+			e._elements[8] := e._elements[8] +carry[7];
+			e._elements[7] := e._elements[7] -ASH(carry[7], 25);
+			carry[8] := ASH(e._elements[8], -26);
+			e._elements[9] := e._elements[9] +carry[8];
+			e._elements[8] := e._elements[8] -ASH(carry[8], 26);
+			carry[9] := ASH(e._elements[9], -25);
+			e._elements[9] := e._elements[9] - ASH(carry[9], 25);
+		   (* // h10 = carry9 *)
+
+			(*// Goal: Output h[0]+...+2^255 h10-2^255 q, which is between 0 and 2^255-20.
+			// Have h[0]+...+2^230 h[9] between 0 and 2^255-1;
+			// evidently 2^255 h10-2^255 q = 0.
+			// Goal: Output h[0]+...+2^230 h[9]. *)
+
+
+			s[0] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[0], 0));
+			s[1] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[0], -8));
+			s[2] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[0] , -16));
+			s[3] := SYSTEM.VAL(SHORTCHAR, (BITS(ASH(e._elements[0] , -24))) + BITS(ASH(e._elements[1], 2)));
+			s[4] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[1] , -6));
+			s[5] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[1] , -14));
+			s[6] := SYSTEM.VAL(SHORTCHAR, (BITS(ASH(e._elements[1] , -22))+ BITS(ASH(e._elements[2],3))));
+			s[7] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[2] , -5));
+			s[8] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[2] , -13));
+			s[9] := SYSTEM.VAL(SHORTCHAR, (BITS(ASH(e._elements[2] , -21)) + BITS(ASH(e._elements[3], 5))));
+			s[10] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[3] , -3));
+			s[11] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[3] , -11));
+			s[12] := SYSTEM.VAL(SHORTCHAR, (BITS(ASH(e._elements[3] , -19)) + BITS(ASH(e._elements[4],6))));
+			s[13] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[4] , -2));
+			s[14] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[4] , -10));
+			s[15] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[4] , -18));
+			s[16] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[5] , -0));
+			s[17] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[5] , -8));
+			s[18] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[5] , -16));
+			s[19] := SYSTEM.VAL(SHORTCHAR, (BITS(ASH(e._elements[5] , -24))+ BITS(ASH(e._elements[6],1))));
+			s[20] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[6] , -7));
+			s[21] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[6] , -15));
+			s[22] := (SYSTEM.VAL(SHORTCHAR, (BITS(ASH(e._elements[6] , -23)) + BITS(ASH(e._elements[7], 3)))));
+			s[23] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[7] , -5));
+			s[24] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[7] , -13));
+			s[25] := SYSTEM.VAL(SHORTCHAR, (BITS(ASH(e._elements[7] , -21)) + BITS(ASH(e._elements[8],4))));
+			s[26] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[8] , -4));
+			s[27] := (SYSTEM.VAL(SHORTCHAR, ASH(e._elements[8] , -12)));
+			s[28] := SYSTEM.VAL(SHORTCHAR, (BITS(ASH(e._elements[8] , -20))+ BITS(ASH(e._elements[9], 6))));
+			s[29] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[9] , - 2));
+			s[30] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[9] , -10));
+			s[31] := SYSTEM.VAL(SHORTCHAR, ASH(e._elements[9] , -18));
+
+		END ToBytes;
+
+	   (* /// <summary>
+		/// Calculates this * g
+		/// </summary>
+		/// <param name="g"></param>
+		/// <remarks>
+		/// Can overlap h with f or g.
+		/// 
+		/// Preconditions:
+		/// |f| bounded by 1.1*2^26,1.1*2^25,1.1*2^26,1.1*2^25,etc.
+		/// |g| bounded by 1.1*2^26,1.1*2^25,1.1*2^26,1.1*2^25,etc.
+		/// 
+		/// Postconditions:
+		/// |h| bounded by 1.1*2^25,1.1*2^24,1.1*2^25,1.1*2^24,etc.
+		/// 
+		/// Notes on implementation strategy:
+		/// 
+		/// Using schoolbook multiplication.
+		/// Karatsuba would save a little in some cost models.
+		/// 
+		/// Most multiplications by 2 and 19 are 32-bit precomputations;
+		/// cheaper than 64-bit postcomputations.
+		/// 
+		/// There is one remaining multiplication by 19 in the carry chain;
+		/// one *19 precomputation can be merged into this,
+		/// but the resulting data flow is considerably less clean.
+		/// 
+		/// There are 12 carries below.
+		/// 10 of them are 2-way parallelizable and vectorizable.
+		/// Can get away with 11 carries, but then data flow is much deeper.
+		/// 
+		/// With tighter constraints on inputs can squeeze carries into int32.
+		/// </remarks>
+		/// <returns></returns> *)
+		PROCEDURE (VAR e : FieldElement) Multiply*(g : FieldElement; OUT final: FieldElement), NEW;
+			VAR f0,f1,f2,f3,f4,f5,f6,f7,f8,f9: INTEGER;
+					h : ARRAY 10 OF INTEGER;
+					g0,g1,g2,g3,g4,g5,g6,g7,g8,g9: INTEGER;
+					g1_19,g2_19,g3_19,g4_19,g5_19,g6_19,g7_19,g8_19,g9_19: INTEGER;
+					f1_2 ,f3_2,f5_2,f7_2,f9_2: INTEGER;
+					carry : ARRAY 10 OF LONGINT;
+					
+					f0g0,f0g1,f0g2,f0g3,f0g4,f0g5,f0g6,f0g7,f0g8,f0g9,f1g0,f1g1_2,f1g2,f1g3_2,
+					f1g4,f1g5_2,f1g6,f1g7_2,f1g8,f1g9_38,f2g0,f2g1,f2g2,f2g3,f2g4,f2g5,f2g6,
+					f2g7,f2g8_19,f2g9_19,f3g0,f3g1_2,f3g2,f3g3_2,f3g4,f3g5_2,f3g6,f3g7_38,
+					f3g8_19,f3g9_38,f4g0,f4g1,f4g2,f4g3,f4g4,f4g5,f4g6_19,f4g7_19,f4g8_19,
+					f4g9_19,f5g0,f5g1_2,f5g2,f5g3_2 ,f5g4,f5g5_38,f5g6_19,f5g7_38,f5g8_19,
+					f5g9_38,f6g0,f6g1,f6g2,f6g3,f6g4_19,f6g5_19,f6g6_19,f6g7_19,f6g8_19,f6g9_19,
+					f7g0,f7g1_2,f7g2,f7g3_38,f7g4_19,f7g5_38,f7g6_19,f7g7_38,f7g8_19,f7g9_38,
+					f8g0,f8g1,f8g2_19,f8g3_19,f8g4_19,f8g5_19,f8g6_19,f8g7_19,f8g8_19,f8g9_19,
+					f9g0,f9g1_38,f9g2_19,f9g3_38,f9g4_19,f9g5_38,f9g6_19,f9g7_38,f9g8_19,f9g9_38,
+					h0,h1,h2,h3,h4,h5,h6,h7,h8,h9 : LONGINT;
+					
+		BEGIN
+			IF Trace THEN
+				StdLog.String("Multiply");StdLog.Ln;
+			END;
+			Log(e, "e");
+			Log(g, "g");
+			
+			
+			 f0 := e._elements[0];
+			 f1 := e._elements[1];
+			 f2 := e._elements[2];
+			 f3 := e._elements[3];
+			 f4 := e._elements[4];
+			 f5 := e._elements[5];
+			 f6 := e._elements[6];
+			 f7 := e._elements[7];
+			 f8 := e._elements[8];
+			 f9 := e._elements[9];
+			 g0 := g._elements[0];
+			 g1 := g._elements[1];
+			 g2 := g._elements[2];
+			 g3 := g._elements[3];
+			 g4 := g._elements[4];
+			 g5 := g._elements[5];
+			 g6 := g._elements[6];
+			 g7 := g._elements[7];
+			 g8 := g._elements[8];
+			 g9 := g._elements[9];
+			 g1_19 := 19 * g1; (*// 1.4*2^29 *)
+			 g2_19 := 19 * g2; (*// 1.4*2^30; still ok *)
+			 g3_19 := 19 * g3;
+			 g4_19 := 19 * g4;
+			 g5_19 := 19 * g5;
+			 g6_19 := 19 * g6;
+			 g7_19 := 19 * g7;
+			 g8_19 := 19 * g8;
+			 g9_19 := 19 * g9;
+			 f1_2 := 2 * f1;
+			 f3_2 := 2 * f3;
+			 f5_2 := 2 * f5;
+			 f7_2 := 2 * f7;
+			 f9_2 := 2 * f9;
+
+			 f0g0 := LONG(f0) * LONG(g0);
+			 f0g1 := LONG(f0) * LONG(g1);
+			 f0g2 := LONG(f0) * LONG(g2);
+			 f0g3 := LONG(f0) * LONG(g3);
+			 f0g4 := LONG(f0) * LONG(g4);
+			 f0g5 := LONG(f0) * LONG(g5);
+			 f0g6 := LONG(f0) * LONG(g6);
+			 f0g7 := LONG(f0) * LONG(g7);
+			 f0g8 := LONG(f0) * LONG(g8);
+			 f0g9 := LONG (f0) * LONG(g9);
+			 f1g0 := LONG(f1) * LONG(g0);
+			 f1g1_2 := LONG(f1_2) * LONG(g1);
+			 f1g2 := LONG (f1) * LONG(g2);
+			 f1g3_2 := LONG (f1_2) * LONG(g3);
+			 f1g4 := LONG (f1) * LONG(g4);
+			 f1g5_2 := LONG(f1_2) * LONG(g5);
+			 f1g6 := LONG(f1) * LONG(g6);
+			 f1g7_2 := LONG(f1_2) * LONG(g7);
+			 f1g8 := LONG(f1) * LONG(g8);
+			 f1g9_38 := LONG (f1_2) * LONG(g9_19);
+			 f2g0 := LONG (f2) * LONG(g0);
+			 f2g1 := LONG(f2) * LONG(g1);
+			 f2g2 := LONG(f2) * LONG(g2);
+			 f2g3 := LONG(f2) * LONG(g3);
+			 f2g4 := LONG(f2) * LONG(g4);
+			 f2g5 := LONG(f2) * LONG(g5);
+			 f2g6 := LONG(f2) * LONG(g6);
+			 f2g7 := LONG(f2) * LONG(g7);
+			 f2g8_19 := LONG(f2) * LONG(g8_19);
+			 f2g9_19 := LONG(f2) * LONG(g9_19);
+			 f3g0 := LONG(f3) * LONG(g0);
+			 f3g1_2 := LONG(f3_2) * LONG(g1);
+			 f3g2 := LONG(f3) * LONG(g2);
+			 f3g3_2 := LONG(f3_2) * LONG(g3);
+			 f3g4 := LONG(f3) * LONG(g4);
+			 f3g5_2 := LONG(f3_2) * LONG(g5);
+			 f3g6 := LONG(f3) * LONG(g6);
+			 f3g7_38 := LONG(f3_2) * LONG(g7_19);
+			 f3g8_19 := LONG(f3) * LONG(g8_19);
+			 f3g9_38 := LONG(f3_2) * LONG(g9_19);
+			 f4g0 := LONG(f4) * LONG(g0);
+			 f4g1 := LONG(f4) * LONG(g1);
+			 f4g2 := LONG(f4) * LONG(g2);
+			 f4g3 := LONG(f4) * LONG(g3);
+			 f4g4 := LONG(f4) * LONG(g4);
+			 f4g5 := LONG(f4) * LONG(g5);
+			 f4g6_19 := LONG(f4) * LONG(g6_19);
+			 f4g7_19 := LONG(f4) * LONG(g7_19);
+			 f4g8_19 := LONG(f4) * LONG(g8_19);
+			 f4g9_19 := LONG(f4) * LONG(g9_19);
+			 f5g0 := LONG(f5) * LONG(g0);
+			 f5g1_2 := LONG(f5_2) * LONG(g1);
+			 f5g2 := LONG(f5) * LONG(g2);
+			 f5g3_2 := LONG(f5_2) * LONG(g3);
+			 f5g4 := LONG(f5) * LONG(g4);
+			 f5g5_38 := LONG(f5_2) * LONG(g5_19);
+			 f5g6_19 := LONG(f5) * LONG(g6_19);
+			 f5g7_38 := LONG(f5_2) * LONG(g7_19);
+			 f5g8_19 := LONG(f5) * LONG(g8_19);
+			 f5g9_38 := LONG(f5_2) * LONG(g9_19);
+			 f6g0 := LONG(f6) * LONG(g0);
+			 f6g1 := LONG(f6) * LONG(g1);
+			 f6g2 := LONG(f6) * LONG(g2);
+			 f6g3 := LONG(f6) * LONG(g3);
+			 f6g4_19 := LONG(f6) * LONG(g4_19);
+			 f6g5_19 := LONG(f6) * LONG(g5_19);
+			 f6g6_19 := LONG(f6) * LONG(g6_19);
+			 f6g7_19 := LONG(f6) * LONG(g7_19);
+			 f6g8_19 := LONG(f6) * LONG(g8_19);
+			 f6g9_19 := LONG(f6) * LONG(g9_19);
+			 f7g0 := LONG(f7) * LONG(g0);
+			 f7g1_2 := LONG(f7_2) * LONG(g1);
+			 f7g2 := LONG(f7) * LONG(g2);
+			 f7g3_38 := LONG(f7_2) * LONG(g3_19);
+			 f7g4_19 := LONG(f7) * LONG(g4_19);
+			 f7g5_38 := LONG(f7_2) * LONG(g5_19);
+			 f7g6_19 := LONG(f7) * LONG(g6_19);
+			 f7g7_38 := LONG(f7_2) * LONG(g7_19);
+			 f7g8_19 := LONG(f7) * LONG(g8_19);
+			 f7g9_38 := LONG(f7_2) * LONG(g9_19);
+			 f8g0 := LONG(f8) * LONG(g0);
+			 f8g1 := LONG(f8) * LONG(g1);
+			 f8g2_19 := LONG(f8) * LONG(g2_19);
+			 f8g3_19 := LONG(f8) * LONG(g3_19);
+			 f8g4_19 := LONG(f8) * LONG(g4_19);
+			 f8g5_19 := LONG(f8) * LONG(g5_19);
+			 f8g6_19 := LONG(f8) * LONG(g6_19);
+			 f8g7_19 := LONG(f8) * LONG(g7_19);
+			 f8g8_19 := LONG(f8) * LONG(g8_19);
+			 f8g9_19 := LONG(f8) * LONG(g9_19);
+			 f9g0 := LONG(f9) * LONG(g0);
+			 f9g1_38 := LONG(f9_2) * LONG(g1_19);
+			 f9g2_19 := LONG(f9) * LONG(g2_19);
+			 f9g3_38 := LONG(f9_2) * LONG(g3_19);
+			 f9g4_19 := LONG(f9) * LONG(g4_19);
+			 f9g5_38 := LONG(f9_2) * LONG(g5_19);
+			 f9g6_19 := LONG(f9) * LONG(g6_19);
+			 f9g7_38 := LONG(f9_2) * LONG(g7_19);
+			 f9g8_19 := LONG(f9) * LONG(g8_19);
+			 f9g9_38 := LONG(f9_2) * LONG(g9_19);
+			 h0 := f0g0 + f1g9_38 + f2g8_19 + f3g7_38 + f4g6_19 + f5g5_38 + f6g4_19 + f7g3_38 + f8g2_19 + f9g1_38;
+			 h1 := f0g1 + f1g0 + f2g9_19 + f3g8_19 + f4g7_19 + f5g6_19 + f6g5_19 + f7g4_19 + f8g3_19 + f9g2_19;
+			 h2 := f0g2 + f1g1_2 + f2g0 + f3g9_38 + f4g8_19 + f5g7_38 + f6g6_19 + f7g5_38 + f8g4_19 + f9g3_38;
+			 h3 := f0g3 + f1g2 + f2g1 + f3g0 + f4g9_19 + f5g8_19 + f6g7_19 + f7g6_19 + f8g5_19 + f9g4_19;
+			 h4 := f0g4 + f1g3_2 + f2g2 + f3g1_2 + f4g0 + f5g9_38 + f6g8_19 + f7g7_38 + f8g6_19 + f9g5_38;
+			 h5 := f0g5 + f1g4 + f2g3 + f3g2 + f4g1 + f5g0 + f6g9_19 + f7g8_19 + f8g7_19 + f9g6_19;
+			 h6 := f0g6 + f1g5_2 + f2g4 + f3g3_2 + f4g2 + f5g1_2 + f6g0 + f7g9_38 + f8g8_19 + f9g7_38;
+			 h7 := f0g7 + f1g6 + f2g5 + f3g4 + f4g3 + f5g2 + f6g1 + f7g0 + f8g9_19 + f9g8_19;
+			 h8 := f0g8 + f1g7_2 + f2g6 + f3g5_2 + f4g4 + f5g3_2 + f6g2 + f7g1_2 + f8g0 + f9g9_38;
+			 h9 := f0g9 + f1g8 + f2g7 + f3g6 + f4g5 + f5g4 + f6g3 + f7g2 + f8g1 + f9g0;
+			
+						
+			(*// |h0| <= (1.1*1.1*2^52*(1+19+19+19+19)+1.1*1.1*2^50*(38+38+38+38+38))
+			//   i.e. |h0| <= 1.2*2^59; narrower ranges for h2, h4, h6, h8
+			// |h1| <= (1.1*1.1*2^51*(1+1+19+19+19+19+19+19+19+19))
+			//   i.e. |h1| <= 1.5*2^58; narrower ranges for h3, h5, h7, h9 *)
+
+			carry[0] := ASH(h0 + ASH(1 , 25) ,- 26);
+			(*IF e._elements[0] = -23457312 THEN
+					ASSERT(FALSE);
+				END; *)
+			h1 := h1 +carry[0];
+			h0 := h0 - ASH(carry[0],26);
+
+			carry[4] := ASH(h4 + ASH(1, 25),-26);
+			h5 := h5 +carry[4];
+			h4 := h4 -ASH(carry[4], 26);
+
+
+			(*// |h0| <= 2^25
+			// |h4| <= 2^25
+			// |h1| <= 1.51*2^58
+			// |h5| <= 1.51*2^58 *)
+
+			carry[1] := ASH(h1 + ASH(1 , 24), -25);
+
+
+			h2 := h2 +carry[1];
+			h1 := h1 -ASH(carry[1], 25);
+			carry[5] := ASH(h5 + ASH(1 , 24), -25);
+			h6 := h6 +carry[5];
+			h5 := h5 -ASH(carry[5], 25);
+
+
+			(*// |h1| <= 2^24; from now on fits into int32
+			// |h5| <= 2^24; from now on fits into int32
+			// |h2| <= 1.21*2^59
+			// |h6| <= 1.21*2^59 *)
+
+			carry[2] := ASH(h2 + ASH(1 , 25), -26);
+			h3 := h3 +carry[2];
+			h2 := h2 -ASH(carry[2], 26);
+
+			carry[6] := ASH(h6 + ASH(1 , 25), -26);
+			h7 := h7 +carry[6];
+			h6 := h6 -ASH(carry[6], 26);
+
+			(*// |h2| <= 2^25; from now on fits into int32 unchanged
+			// |h6| <= 2^25; from now on fits into int32 unchanged
+			// |h3| <= 1.51*2^58
+			// |h7| <= 1.51*2^58*)
+
+			carry[3] := ASH(h3 + ASH(1 , 24), - 25);
+			h4 := h4 +carry[3];
+			h3 := h3 - ASH(carry[3], 25);
+			carry[7] := ASH(h7 + ASH(1 , 24),- 25);
+			h8 :=h8 +carry[7];
+			h7 := h7 -ASH(carry[7],  25);
+
+
+			(*// |h3| <= 2^24; from now on fits into int32 unchanged
+			// |h7| <= 2^24; from now on fits into int32 unchanged
+			// |h4| <= 1.52*2^33
+			// |h8| <= 1.52*2^33*)
+
+			carry[4] := ASH(h4 + ASH(1 , 25), - 26);
+			h5 := h5 +carry[4];
+			h4 := h4 -ASH(carry[4],  26);
+
+			carry[8] := ASH(h8 + ASH(1 , 25),-26);
+			h9:=h9 +carry[8];
+			h8 := h8 -ASH(carry[8], 26);
+
+
+			(*// |h4| <= 2^25; from now on fits into int32 unchanged
+			// |h8| <= 2^25; from now on fits into int32 unchanged
+			// |h5| <= 1.01*2^24
+			// |h9| <= 1.51*2^58*)
+
+			carry[9] := ASH(h9 + ASH(1, 24),- 25);
+			h0 := h0 +carry[9] * 19;
+			h9 := h9 -ASH(carry[9],  25);
+
+
+			(*// |h9| <= 2^24; from now on fits into int32 unchanged
+			// |h0| <= 1.8*2^37*)
+
+			carry[0] := ASH(h0 + ASH(1, 25), -26);
+			h1 := h1 +carry[0];
+			h0 := h0 -ASH(carry[0] , 26);
+
+
+			(*// |h0| <= 2^25; from now on fits into int32 unchanged
+			// |h1| <= 1.01*2^24*)
+
+
+			h[0] := SHORT(h0);
+			h[1] := SHORT(h1);
+			h[2] := SHORT(h2);
+			h[3] := SHORT(h3);
+			h[4] := SHORT(h4);
+			h[5] := SHORT(h5);
+			h[6] := SHORT(h6);
+			h[7] := SHORT(h7);
+			h[8] := SHORT(h8);
+			h[9] := SHORT(h9);
+
+
+			final.SetElementsDirect(h);
+			Log(final, "final");
+
+		END Multiply;
+		(*/// <summary>
+		/// Calculates f*f. Can overlap h with f.
+		/// </summary>
+		/// <returns></returns> *)
+		PROCEDURE (VAR e : FieldElement) Square*(OUT final: FieldElement), NEW;
+			VAR 
+			carry : ARRAY 10 OF LONGINT;
+			h : ARRAY 10 OF INTEGER;
+			f0,f1,f2,f3,f4,f5,f6,f7,f8,f9 : INTEGER;
+			f0_2,f1_2,f2_2,f3_2,f4_2,f5_2,f6_2,f7_2,f5_38,f6_19,f7_38,f8_19,f9_38: INTEGER;
+			f0f0,f0f1_2,f0f2_2,f0f3_2,f0f4_2,f0f5_2,f0f6_2,f0f7_2,f0f8_2,f0f9_2,f1f1_2,f1f2_2,
+			f1f3_4,f1f4_2,f1f5_4,f1f6_2,f1f7_4,f1f8_2,f1f9_76,f2f2,f2f3_2,f2f4_2,f2f5_2,
+			f2f6_2,f2f7_2,f2f8_38,f2f9_38,f3f3_2,f3f4_2,f3f5_4,f3f6_2,f3f7_76,f3f8_38,f3f9_76,
+			f4f4,f4f5_2,f4f6_38,f4f7_38,f4f8_38,f4f9_38,f5f5_38,f5f6_38,f5f7_76,f5f8_38,f5f9_76,
+			f6f6_19,f6f7_38,f6f8_38,f6f9_38,f7f7_38,f7f8_38,f7f9_76,f8f8_19,f8f9_38,f9f9_38,
+			h0,h1,h2,h3,h4,h5,h6,h7,h8,h9 : LONGINT;
+			
+		BEGIN
+			IF Trace THEN
+				StdLog.String("Square"); StdLog.Ln;
+				Log(e, "e");
+			END;
+			 f0 := e._elements[0];
+			 f1 := e._elements[1];
+			 f2 := e._elements[2];
+			 f3 := e._elements[3];
+			 f4 := e._elements[4];
+			 f5 := e._elements[5];
+			 f6 := e._elements[6];
+			 f7 := e._elements[7];
+			 f8 := e._elements[8];
+			 f9 := e._elements[9];
+			 f0_2 := 2 * f0;
+			 f1_2 := 2 * f1;
+			 f2_2 := 2 * f2;
+			 f3_2 := 2 * f3;
+			 f4_2 := 2 * f4;
+			 f5_2 := 2 * f5;
+			 f6_2 := 2 * f6;
+			 f7_2 := 2 * f7;
+			 f5_38 := 38 * f5; (* 1.31*2^30 *)
+			 f6_19 := 19 * f6; (* 1.31*2^30*)
+			 f7_38 := 38 * f7; (* 1.31*2^30*)
+			 f8_19 := 19 * f8; (* 1.31*2^30*)
+			 f9_38 := 38 * f9; (* 1.31*2^30*)
+			 f0f0 := LONG(f0) * LONG(f0);
+			 f0f1_2 := LONG(f0_2) * LONG(f1);
+			 f0f2_2 := LONG(f0_2) * LONG(f2);
+			 f0f3_2 := LONG(f0_2) * LONG(f3);
+			 f0f4_2 := LONG(f0_2) * LONG(f4);
+			 f0f5_2 := LONG(f0_2) * LONG(f5);
+			 f0f6_2 := LONG(f0_2) * LONG(f6);
+			 f0f7_2 := LONG(f0_2) * LONG(f7);
+			 f0f8_2 := LONG(f0_2) * LONG(f8);
+			 f0f9_2 := LONG(f0_2) * LONG(f9);
+			 f1f1_2 := LONG(f1_2) * LONG(f1);
+			 f1f2_2 := LONG(f1_2) * LONG(f2);
+			 f1f3_4 := LONG(f1_2) * LONG(f3_2);
+			 f1f4_2 := LONG(f1_2) * LONG(f4);
+			 f1f5_4 := LONG(f1_2) * LONG(f5_2);
+			 f1f6_2 := LONG(f1_2) * LONG(f6);
+			 f1f7_4 := LONG(f1_2) * LONG(f7_2);
+			 f1f8_2 := LONG(f1_2) * LONG(f8);
+			 f1f9_76 := LONG(f1_2) * LONG(f9_38);
+			 f2f2 := LONG(f2) * LONG(f2);
+			 f2f3_2 := LONG(f2_2) * LONG(f3);
+			 f2f4_2 := LONG(f2_2) * LONG(f4);
+			 f2f5_2 := LONG(f2_2) * LONG(f5);
+			 f2f6_2 := LONG(f2_2) * LONG(f6);
+			 f2f7_2 := LONG(f2_2) * LONG(f7);
+			 f2f8_38 := LONG(f2_2) * LONG(f8_19);
+			 f2f9_38 := LONG(f2) * LONG(f9_38);
+			 f3f3_2 := LONG(f3_2) * LONG(f3);
+			 f3f4_2 := LONG(f3_2) * LONG(f4);
+			 f3f5_4 := LONG(f3_2) * LONG(f5_2);
+			 f3f6_2 := LONG(f3_2) * LONG(f6);
+			 f3f7_76 := LONG(f3_2) * LONG(f7_38);
+			 f3f8_38 := LONG(f3_2) * LONG(f8_19);
+			 f3f9_76 := LONG(f3_2) * LONG(f9_38);
+			 f4f4 := LONG(f4) * LONG(f4);
+			 f4f5_2 := LONG(f4_2) * LONG(f5);
+			 f4f6_38 := LONG(f4_2) * LONG(f6_19);
+			 f4f7_38 := LONG(f4) * LONG(f7_38);
+			 f4f8_38 := LONG(f4_2) * LONG(f8_19);
+			 f4f9_38 := LONG(f4) * LONG(f9_38);
+			 f5f5_38 := LONG(f5) * LONG(f5_38);
+			 f5f6_38 := LONG(f5_2) * LONG(f6_19);
+			 f5f7_76 := LONG(f5_2) * LONG(f7_38);
+			 f5f8_38 := LONG(f5_2) * LONG(f8_19);
+			 f5f9_76 := LONG(f5_2) * LONG(f9_38);
+			 f6f6_19 := LONG(f6) * LONG(f6_19);
+			 f6f7_38 := LONG(f6) * LONG(f7_38);
+			 f6f8_38 := LONG(f6_2) * LONG(f8_19);
+			 f6f9_38 := LONG(f6) * LONG(f9_38);
+			 f7f7_38 := LONG(f7) * LONG(f7_38);
+			 f7f8_38 := LONG(f7_2) * LONG(f8_19);
+			 f7f9_76 := LONG(f7_2) * LONG(f9_38);
+			 f8f8_19 := LONG(f8) * LONG(f8_19);
+			 f8f9_38 := LONG(f8) * LONG(f9_38);
+			 f9f9_38 := LONG(f9) * LONG(f9_38);
+			 h0 := f0f0 + f1f9_76 + f2f8_38 + f3f7_76 + f4f6_38 + f5f5_38;
+			 h1 := f0f1_2 + f2f9_38 + f3f8_38 + f4f7_38 + f5f6_38;
+			 h2 := f0f2_2 + f1f1_2 + f3f9_76 + f4f8_38 + f5f7_76 + f6f6_19;
+			 h3 := f0f3_2 + f1f2_2 + f4f9_38 + f5f8_38 + f6f7_38;
+			 h4 := f0f4_2 + f1f3_4 + f2f2 + f5f9_76 + f6f8_38 + f7f7_38;
+			 h5 := f0f5_2 + f1f4_2 + f2f3_2 + f6f9_38 + f7f8_38;
+			 h6 := f0f6_2 + f1f5_4 + f2f4_2 + f3f3_2 + f7f9_76 + f8f8_19;
+			 h7 := f0f7_2 + f1f6_2 + f2f5_2 + f3f4_2 + f8f9_38;
+			 h8 := f0f8_2 + f1f7_4 + f2f6_2 + f3f5_4 + f4f4 + f9f9_38;
+			 h9 := f0f9_2 + f1f8_2 + f2f7_2 + f3f6_2 + f4f5_2;
+			
+			
+			carry[0] := ASH(h0 + ASH(1, 25) , -26);
+			h1 := h1 +carry[0];
+			h0 := h0 -ASH(carry[0], 26);
+			carry[4] := ASH(h4 + ASH(1, 25) , -26);
+			h5 := h5 +carry[4];
+			h4 := h4 -ASH(carry[4], 26);
+
+			carry[1] := ASH(h1 + ASH(1, 24), -25);
+			h2 := h2 +carry[1];
+			h1 := h1 -ASH(carry[1], 25);
+			carry[5] := ASH(h5 + ASH(1, 24) , -25);
+			h6 := h6 +carry[5];
+			h5 := h5 -ASH(carry[5], 25);
+
+			carry[2] := ASH(h2 + ASH(1, 25) , -26);
+			h3 :=h3 + carry[2];
+			h2 := h2 -ASH(carry[2], 26);
+			carry[6] := ASH(h6 + ASH(1, 25), -26);
+			h7 := h7 +carry[6];
+			h6 := h6 -ASH(carry[6], 26);
+
+			carry[3] := ASH(h3 + ASH(1, 24) , -25);
+			h4 := h4 +carry[3];
+			h3 := h3 -ASH(carry[3], 25);
+			carry[7] := ASH(h7 + ASH(1, 24) , -25);
+			h8 := h8 +carry[7];
+			h7 := h7 -ASH(carry[7], 25);
+
+			carry[4] := ASH(h4 + ASH(1, 25) , -26);
+			h5 := h5 +carry[4];
+			h4 := h4 - ASH(carry[4], 26);
+			carry[8] := ASH(h8 + ASH(1, 25) , -26);
+			h9 := h9 +carry[8];
+			h8 := h8 - ASH(carry[8], 26);
+
+			carry[9] := ASH(h9 + ASH(1, 24) , -25);
+			h0 := h0 + carry[9] * 19;
+			h9 := h9 - ASH(carry[9], 25);
+
+			carry[0] := ASH(h0 + ASH(1, 25) , -26);
+			h1 := h1 +carry[0];
+			h0 := h0 - ASH(carry[0], 26);
+
+			
+			h[0] := SHORT (h0);
+			h[1] := SHORT (h1);
+			h[2] := SHORT (h2);
+			h[3] := SHORT (h3);
+			h[4] := SHORT (h4);
+			h[5] := SHORT (h5);
+			h[6] := SHORT (h6);
+			h[7] := SHORT (h7);
+			h[8] := SHORT (h8);
+			h[9] := SHORT (h9);
+			final.SetElementsDirect(h);
+			Log(final, "final");
+		END Square;
+		(*/// <summary>
+		/// Calculates h := f * 121666. Can overlap h with f; I have no clue why this is a thing
+		/// </summary>
+		/// <remarks>
+		///   Preconditions:
+		/// |f| bounded by 1.1*2^26,1.1*2^25,1.1*2^26,1.1*2^25,etc.
+		/// 
+		/// Postconditions:
+		/// |h| bounded by 1.1*2^25,1.1*2^24,1.1*2^25,1.1*2^24,etc.
+		/// </remarks>
+		/// <returns></returns> *)
+		PROCEDURE (VAR e : FieldElement)  Mul121666*(OUT final : FieldElement) , NEW;
+			VAR carry : ARRAY 10 OF LONGINT;
+			h0,h1,h2,h3,h4,h5,h6,h7,h8,h9: LONGINT;
+			h : ARRAY 10 OF INTEGER;
+		BEGIN
+			 h0 := LONG(e._elements[0]) * 121666;
+			 h1 := LONG(e._elements[1]) * 121666;
+			 h2 := LONG(e._elements[2]) * 121666;
+			 h3 := LONG(e._elements[3]) * 121666;
+			 h4 := LONG(e._elements[4]) * 121666;
+			 h5 := LONG(e._elements[5]) * 121666;
+			 h6 := LONG(e._elements[6]) * 121666;
+			 h7 := LONG(e._elements[7]) * 121666;
+			 h8 := LONG(e._elements[8]) * 121666;
+			 h9 := LONG(e._elements[9]) * 121666;
+			
+
+			carry[9] := ASH(h9 + ASH(1, 24) , -25);
+			h0 := h0 +carry[9] * 19;
+			h9 := h9 -ASH(carry[9], 25);
+			carry[1] := ASH(h1 + ASH(1, 24) , -25);
+			h2 := h2 +carry[1];
+			h1 := h1 -ASH(carry[1], 25);
+			carry[3] := ASH(h3 + ASH(1, 24) , -25);
+			h4 := h4 +carry[3];
+			h3 := h3 -ASH(carry[3], 25);
+			carry[5] := ASH(h5 + ASH(1, 24) , -25);
+			h6 :=h6 + carry[5];
+			h5 := h5 -ASH(carry[5], 25);
+			carry[7] := ASH(h7 + ASH(1, 24) , -25);
+			h8 := h8 +carry[7];
+			h7 := h7 -ASH(carry[7], 25);
+
+			carry[0] := ASH(h0 + ASH(1, 25) , -26);
+			h1 := h1 +carry[0];
+			h0 := h0 -ASH(carry[0], 26);
+			carry[2] := ASH(h2 + ASH(1, 25) , -26);
+			h3 := h3 +carry[2];
+			h2 := h2 -ASH(carry[2], 26);
+			carry[4] := ASH(h4 + ASH(1, 25) , -26);
+			h5 := h5 +carry[4];
+			h4 := h4 -ASH(carry[4], 26);
+			carry[6] := ASH(h6 + ASH(1, 25) , -26);
+			h7 := h7 +carry[6];
+			h6 := h6 -ASH(carry[6], 26);
+			carry[8] := ASH(h8 + ASH(1, 25) , -26);
+			h9 := h9 +carry[8];
+			h8 := h8 -ASH(carry[8], 26);
+
+
+
+			h[0] := SHORT (h0);
+			h[1] := SHORT (h1);
+			h[2] := SHORT (h2);
+			h[3] := SHORT (h3);
+			h[4] := SHORT (h4);
+			h[5] := SHORT (h5);
+			h[6] := SHORT (h6);
+			h[7] := SHORT (h7);
+			h[8] := SHORT (h8);
+			h[9] := SHORT (h9);
+			final.SetElementsDirect(h);
+
+		END Mul121666;
+		(*/// <summary>
+		/// Calculates this ^(-1)
+		/// </summary>
+		/// 
+		/// <returns></returns> *)
+		PROCEDURE (VAR e : FieldElement) Invert*(OUT final:FieldElement), NEW;
+			VAR t0, t1, t2, t3 : FieldElement; i : INTEGER;
+		BEGIN
+			IF Trace THEN
+				StdLog.String("Invert"); StdLog.Ln;
+			END;
+			e.Square(t0);
+
+			FOR i := 1 TO 0 DO (* why is this a thing? *)
+				t0.Square(t0)
+			END;
+
+			t0.Square(t1);
+
+			FOR i := 1 TO 1 DO
+				t1.Square(t1)
+			END;
+
+			e.Multiply(t1, t1);
+			t0.Multiply(t1, t0);
+			t0.Square(t2);
+
+			FOR i := 1 TO 0 DO (* // what the fuck *)
+				t2.Square(t2)
+			END;
+
+			t1.Multiply(t2,t1);
+			t1.Square(t2);
+
+			FOR i := 1 TO 4 DO
+				t2.Square(t2)
+			END;
+
+			t2.Multiply(t1,t1);
+			t1.Square(t2);
+
+			FOR i := 1 TO 9 DO
+				t2.Square(t2)
+			END;
+
+			t2.Multiply(t1,t2);
+			t2.Square(t3);
+
+			FOR i := 1 TO 19 DO
+				t3.Square(t3)
+			END;
+
+			t3.Multiply(t2,t2);
+			t2.Square(t2);
+
+			FOR i := 1 TO 9 DO
+				t2.Square(t2)
+			END;
+
+			t2.Multiply(t1,t1);
+			t1.Square(t2);
+
+			FOR i := 1 TO 49 DO
+				t2.Square(t2)
+			END;
+
+			t2.Multiply(t1,t2);
+			t2.Square(t3);
+
+			FOR i := 1 TO 99 DO
+				t3.Square(t3)
+			END;
+
+			t3.Multiply(t2,t2);
+			t2.Square(t2);
+
+			FOR i := 1 TO 49 DO
+				t2.Square(t2)
+			END;
+
+			t2.Multiply(t1,t1);
+			t1.Square(t1);
+
+			FOR i := 1 TO 4 DO
+				t1.Square(t1)
+			END;
+
+			t1.Multiply(t0,final);
+		END Invert;
+
+
+		(*/// <summary>
+		/// Sets all values of field to zero except that Element[0] := 1
+		/// </summary> *)
+		PROCEDURE (VAR e : FieldElement)  One*(), NEW;
+			VAR i: INTEGER;
+		BEGIN
+			FOR i := 1 TO 9 DO
+				e._elements[i] := 0
+			END;
+			e._elements[0] := 1;
+
+		END One;
+
+		PROCEDURE Add* (f1, f2: FieldElement; OUT res: FieldElement);
+			VAR i: INTEGER;
+		BEGIN
+
+			FOR i := 0 TO 9 DO
+				res._elements[i] := f1._elements[i] + f2._elements[i];
+			END
+		END Add;
+
+		PROCEDURE Sub* (f1, f2: FieldElement; OUT res: FieldElement);
+			VAR i: INTEGER;
+		BEGIN
+
+			FOR i := 0 TO 9 DO
+				res._elements[i] := f1._elements[i] - f2._elements[i];
+			END
+		END Sub;
+
+		(*/// <summary>
+		/// Replaces (f,g) with (g,f) if b == 1; replaces (f,g) with (f,g) if b == 0.
+		/// </summary>
+		/// <param name="f">f</param>
+		/// <param name="g">g</param>
+		/// <param name="b"></param> *)
+		PROCEDURE CSwap*(VAR f, g : FieldElement; b : INTEGER);
+			VAR i: INTEGER;t : SET;
+		BEGIN
+			b := -b;
+			FOR i := 0 TO 9 DO
+
+				t := BITS(b) * (BITS(f._elements[i]) / BITS(g._elements[i]));
+				
+				f._elements[i] := ORD(BITS(f._elements[i]) / t);
+				g._elements[i] := ORD(BITS(g._elements[i]) / t);
+
+			END;
+			
+		END CSwap;
+		(*/// <summary>
+		/// Copies one FieldElement to another FieldElement
+		/// </summary>
+		/// <param name="dst">Where the src must be copied to</param>
+		/// <param name="src">What to copy</param> *)
+		PROCEDURE Copy*(OUT dst : FieldElement; IN src : FieldElement);
+			VAR i : INTEGER;
+		BEGIN
+			FOR i := 0 TO 9 DO
+				dst._elements[i] := src._elements[i];
+			END
+		END Copy;
+
+
+END CryptoFieldElement.

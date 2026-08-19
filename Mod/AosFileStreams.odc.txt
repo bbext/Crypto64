@@ -1,0 +1,195 @@
+MODULE CryptoAosFileStreams;
+
+(**
+	AUTHOR: Shelin Anton, 2023
+	PURPOSE: BB Files aos wrapper
+*)
+
+IMPORT Streams := CryptoAosStreams, Files, AO := CryptoAosCompat, SYSTEM;
+
+CONST 
+	WriteError = 2907;
+	DefaultWriterSize = 4096;
+	DefaultReaderSize = 4096;
+	PathDelimiter* = "/";	(** Path delimiter *)
+	PrefixLength* = 16;	(** maximum length of a file system prefix. *)
+	NameLength* = 256;	(** maximum length of a file name. *)
+	
+TYPE
+	FileName* = ARRAY PrefixLength+NameLength OF SHORTCHAR;
+	Size = Streams.Position;
+	Bytes = ARRAY OF BYTE;
+	(** Reader for buffered reading of a file via Streams.Read* procedures.  See OpenReader. *)
+	Reader* = POINTER TO RECORD (Streams.Reader)
+			file : File;
+			r : Files.Reader;
+		END;
+	ReaderReceiver = POINTER TO RECORD(Streams.Receiver) reader: Reader END;
+	(** Writer for buffered writing of a file via Streams.Write* procedures.  See OpenWriter. *)
+	Writer* = POINTER TO RECORD (Streams.Writer)	(** not sharable between multiple processes *)
+			file : File;
+			w : Files.Writer;
+		END;
+	WriterSender = POINTER TO RECORD(Streams.Sender) writer: Writer END;
+	File* = POINTER TO RECORD 
+		f : Files.File;
+		name: POINTER TO ARRAY OF SHORTCHAR;
+	END;
+
+	PROCEDURE New*(IN name: ARRAY OF SHORTCHAR): File;
+		VAR f : File;
+	BEGIN
+		NEW(f);
+		f.f := Files.dir.New(Files.dir.This(""), FALSE);
+		NEW(f.name, LEN(name$)+1);
+		f.name^ := name$;
+		RETURN f
+	END New;
+
+	PROCEDURE Old*(IN name: ARRAY OF SHORTCHAR): File;
+	VAR f : File;
+	BEGIN
+		NEW(f);
+		f.f := Files.dir.Old(Files.dir.This(""), name$, FALSE);
+		NEW(f.name, LEN(name$)+1);
+		f.name^ := name$;
+		RETURN f
+	END Old;
+
+	PROCEDURE Register*(f: File);
+		VAR res : INTEGER;
+	BEGIN
+		f.f.Register(f.name$, "", FALSE, res);
+		ASSERT(res=0);
+	END Register;
+
+	PROCEDURE (SELF: File) Update*, NEW;
+	BEGIN
+		SELF.f.Flush()
+	END Update;
+
+	PROCEDURE (SELF: File) GetDate*(VAR t, d: AO.SIGNED32), NEW;
+	BEGIN 
+		(*todo*)
+	END GetDate;
+
+	PROCEDURE (SELF: File) Close*, NEW;
+	BEGIN
+		SELF.f.Close()
+	END Close;
+
+	PROCEDURE (SELF: File) Length*(): Size, NEW;
+	BEGIN 
+		RETURN SELF.f.Length()
+	END Length;
+
+	PROCEDURE JoinPath*(IN path, name: ARRAY OF SHORTCHAR; VAR pathname: ARRAY OF SHORTCHAR);
+	VAR i, j, len, n1, n2: AO.SIZE;
+	BEGIN
+		len := LEN(pathname)-1;
+		n1 := 0; WHILE path[n1] # 0X DO INC(n1); END;
+		n2 := 0; WHILE name[n2] # 0X DO INC(n2); END;
+		i := MIN(len,n2-1);
+		IF (n1 > 0) & (path[n1-1] # PathDelimiter) THEN INC(n1); END;
+		j := MIN(len,n1+n2);
+		pathname[j] := 0X;
+		DEC(j);
+		WHILE i >= 0 DO pathname[j] := name[i]; DEC(i); DEC(j); END;
+		IF j >= 0 THEN pathname[j] := PathDelimiter; DEC(j); END;
+		FOR i := 0 TO j DO pathname[i] := path[i]; END;
+	END JoinPath;
+
+	PROCEDURE (SELF : Reader) Receive(VAR buf: ARRAY OF SHORTCHAR; ofs, size, min: AO.SIZE; VAR len: AO.SIZE; VAR res: INTEGER), NEW;
+	BEGIN
+		len := SELF.r.Pos();
+		SELF.r.ReadBytes(SYSTEM.VAL(Bytes, buf), ofs, size);
+		len := SELF.r.Pos() - len;
+		IF len >= min THEN
+			res := Streams.Ok ELSE res := Streams.EOF (* end of file *)
+		END
+	END Receive;
+
+	PROCEDURE  (SELF : Reader) CanSetPos*() : BOOLEAN;
+	BEGIN
+		RETURN TRUE
+	END CanSetPos;
+
+	PROCEDURE  (SELF : Reader) SetPos*(pos : Streams.Position);
+	BEGIN
+		SELF.r.SetPos(SHORT(pos));
+		SELF.Reset;
+		SELF.received := pos; (* this effects that Streams.Reader.Pos() returns the correct location in the file *)
+	END SetPos;
+	
+	PROCEDURE (SELF: ReaderReceiver) Receive (VAR buf : ARRAY OF SHORTCHAR; ofs, size, min : AO.SIZE; VAR len : AO.SIZE; VAR res : INTEGER);
+	BEGIN
+		SELF.reader.Receive(buf, ofs, size, min, len, res);
+	END Receive;
+
+	PROCEDURE  (SELF : Reader) InitFileReader*(file : File; pos: Streams.Position), NEW;
+		VAR rr : ReaderReceiver;
+	BEGIN
+		ASSERT(file # NIL);
+		SELF.file := file;
+		SELF.r := file.f.NewReader(NIL);
+		SELF.r.SetPos(SHORT(pos));
+		NEW(rr); rr.reader := SELF;
+		SELF.InitReader(rr, DefaultReaderSize);
+		SELF.received := pos; (* this effects that Streams.Reader.Pos() returns the correct location in the file *)
+	END InitFileReader;
+	
+	PROCEDURE (SELF : Writer)  Send(IN buf: ARRAY OF SHORTCHAR; ofs, len: AO.SIZE; propagate: BOOLEAN; VAR res: INTEGER), NEW;
+		VAR lenWriten : INTEGER;
+	BEGIN
+		lenWriten := SELF.w.Pos();
+		SELF.w.WriteBytes(SYSTEM.VAL(Bytes, buf), ofs, len);
+		IF propagate THEN SELF.file.Update END;
+		lenWriten := SELF.w.Pos() - lenWriten;
+		IF (len - lenWriten) = 0 THEN res := Streams.Ok ELSE res := WriteError (* not all bytes written *) END
+	END Send;
+	
+	PROCEDURE (SELF: WriterSender) Send* (IN buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE; propagate : BOOLEAN; VAR res : INTEGER);
+	BEGIN
+		SELF.writer.Send(buf, ofs, len, propagate, res);
+	END Send;
+
+	PROCEDURE (SELF : Writer) CanSetPos*() : BOOLEAN;
+	BEGIN
+		RETURN TRUE
+	END CanSetPos;
+
+	PROCEDURE (SELF : Writer) SetPos*(pos : Streams.Position);
+	BEGIN
+		SELF.file.Update;
+		SELF.w.SetPos(SHORT(pos));
+		SELF.Reset; 
+	END SetPos;
+
+	PROCEDURE (SELF : Writer) Pos*(): Streams.Position;
+	BEGIN
+		SELF.file.Update;
+		RETURN SELF.w.Pos()
+	END Pos;
+
+	PROCEDURE (SELF : Writer) InitFileWriter*(file: File; pos: Streams.Position), NEW;
+		VAR ws:WriterSender;
+	BEGIN
+		ASSERT(file # NIL);
+		SELF.file := file;
+		SELF.w := file.f.NewWriter(NIL);
+		SELF.w.SetPos(SHORT(pos));
+		NEW(ws); ws.writer := SELF;
+		SELF.InitWriter(ws, DefaultWriterSize);
+	END InitFileWriter;
+	
+	PROCEDURE OpenWriter*(VAR b: Writer; f: File; pos: Streams.Position);
+	BEGIN
+		NEW(b); b.InitFileWriter(f, pos)
+	END OpenWriter;
+	
+	PROCEDURE OpenReader*(VAR b: Reader; f: File; pos: Streams.Position);
+	BEGIN
+		NEW(b); b.InitFileReader(f, pos)
+	END OpenReader;
+
+END CryptoAosFileStreams.

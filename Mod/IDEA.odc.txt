@@ -1,0 +1,296 @@
+MODULE CryptoIDEA; (* g.f.	2002.07.19 *)
+
+	IMPORT Ciphers := CryptoCiphers, AO := CryptoAosCompat, SYSTEM;
+
+	TYPE
+		Card16 = AO.SIGNED32;
+		Block = ARRAY 4 OF Card16;
+		KeyBlock = ARRAY 9, 6 OF Card16;
+		Cipher* = POINTER TO EXTENSIBLE RECORD(Ciphers.Cipher)
+			ekeys, dkeys : KeyBlock;
+			iv : Block
+		END;
+
+	PROCEDURE shor (a, b : Card16): Card16;
+
+	BEGIN
+		RETURN ORD(BITS(SYSTEM.LSH(a, 9)) + BITS(SYSTEM.LSH(b, (-7)))) MOD 10000H
+	END shor;
+
+
+	PROCEDURE CalcEncryptionKeys (IN src : ARRAY OF SHORTCHAR; VAR e : KeyBlock);
+		VAR
+			s: ARRAY 54 OF Card16;
+			i, j, p: AO.SIGNED16;
+
+
+	BEGIN
+		p := (*WARN CONV CAST*)SHORT(0);
+		FOR i := 0 TO 7 DO
+			s[i] := ORD(src[p]) * 256 + ORD(src[p + 1]);
+			INC(p, 2)
+		END;
+		i := (*WARN CONV CAST*)SHORT(8);
+		j := (*WARN CONV CAST*)SHORT(0);
+		WHILE i < 53 DO
+			s[i + 0] := shor(s[j + 1], s[j + 2]);
+			s[i + 1] := shor(s[j + 2], s[j + 3]);
+			s[i + 2] := shor(s[j + 3], s[j + 4]);
+			s[i + 3] := shor(s[j + 4], s[j + 5]);
+			s[i + 4] := shor(s[j + 5], s[j + 6]);
+			s[i + 5] := shor(s[j + 6], s[j + 7]);
+			IF i <= 53 - 7 THEN
+				s[i + 6] := shor(s[j + 7], s[j + 0]);
+				s[i + 7] := shor(s[j + 0], s[j + 1])
+			END;
+			INC(j, 8);
+			INC(i, 8)
+		END;
+		FOR i := 0 TO 8 DO
+			FOR j := 0 TO 5 DO
+				e[i, j] := s[6 * i + j]
+			END
+		END
+	END CalcEncryptionKeys;
+
+	PROCEDURE Inverse (x : Card16): Card16;
+		VAR
+			n1, n2, q, r, b1, b2, t: AO.SIGNED32;
+
+
+	BEGIN
+		IF x = 0 THEN
+			b2 := 0
+		ELSE
+			n1 := 10001H;
+			n2 := x MOD 10000H;
+			b2 := 1;
+			b1 := 0;
+			REPEAT
+				r := n1 MOD n2;
+				q := (n1 - r) DIV n2;
+				IF r = 0 THEN
+					IF b2 < 0 THEN
+						INC(b2, 10001H)
+					END
+				ELSE
+					n1 := n2;
+					n2 := r;
+					t := b2;
+					b2 := b1 - q * b2;
+					b1 := t
+				END
+			UNTIL r = 0
+		END;
+		RETURN b2 MOD 10000H
+	END Inverse;
+
+	PROCEDURE CalcDecryptionKeys (IN e : KeyBlock; VAR d : KeyBlock);
+		VAR
+			i, j: AO.SIGNED16;
+			t: Card16;
+
+
+	BEGIN
+		j := (*WARN CONV CAST*)SHORT(8);
+		FOR i := 0 TO 8 DO
+			d[i, 0] := Inverse(e[j, 0]);
+			d[i, 1] := (10000H - e[j, 2]) MOD 10000H;
+			d[i, 2] := (10000H - e[j, 1]) MOD 10000H;
+			d[i, 3] := Inverse(e[j, 3]);
+			IF i # 8 THEN
+				DEC(j);
+				d[i, 4] := e[j, 4];
+				d[i, 5] := e[j, 5]
+			END
+		END;
+		t := d[0, 1];
+		d[0, 1] := d[0, 2];
+		d[0, 2] := t;
+		t := d[8, 1];
+		d[8, 1] := d[8, 2];
+		d[8, 2] := t
+	END CalcDecryptionKeys;
+
+	PROCEDURE (SELF: Cipher) InitKey* (IN src : ARRAY OF SHORTCHAR; keybits : AO.SIZE);
+
+	BEGIN
+		ASSERT(keybits = 128);
+		SELF.InitKey^(src, keybits);
+		CalcEncryptionKeys(src, SELF.ekeys);
+		CalcDecryptionKeys(SELF.ekeys, SELF.dkeys)
+	END InitKey;
+
+	PROCEDURE (SELF: Cipher) SetIV* (IN src : ARRAY OF SHORTCHAR; mode : AO.SIGNED8);
+		VAR
+			i: AO.SIGNED16;
+
+
+	BEGIN
+		SELF.SetIV^(src, mode);
+		FOR i := 0 TO 3 DO
+			SELF.iv[i] := ORD(src[2 * i + 1]) * 256 + ORD(src[2 * i])
+		END
+	END SetIV;
+
+	PROCEDURE Xor (a, b : Card16): Card16;
+
+	BEGIN
+		RETURN ORD(BITS(a) / BITS(b))
+	END Xor;
+
+	PROCEDURE Mul (a, b : Card16): Card16;
+		VAR
+			p, q: AO.SIGNED32;
+
+
+	BEGIN
+		IF a = 0 THEN
+			p := 10001H - b
+		ELSIF b = 0 THEN
+			p := 10001H - a
+		ELSE
+			q := (a MOD 10000H) * (b MOD 10000H);
+			p := (q MOD 10000H) - SYSTEM.LSH(q, (-16));
+			IF p <= 0 THEN
+				INC(p, 10001H)
+			END
+		END;
+		RETURN p MOD 10000H
+	END Mul;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: Cipher) Init*;
+
+	BEGIN
+		SELF.SetNameAndBlocksize("idea", 8)
+	END Init;
+
+	PROCEDURE NewCipher* (): Ciphers.Cipher;
+		VAR
+			cipher: Cipher;
+
+
+	BEGIN
+		NEW(cipher);cipher.Init();
+		RETURN cipher
+	END NewCipher;
+
+	PROCEDURE IDEACipher (VAR b : Block; IN key : KeyBlock);
+		VAR
+			i, x1, x2, x3, x4, t1, t2, t3: Card16;
+
+
+	BEGIN
+		x1 := b[0];
+		x2 := b[1];
+		x3 := b[2];
+		x4 := b[3];
+		FOR i := 0 TO 7 DO
+			x1 := Mul(x1, key[i, 0]);
+			x2 := (x2 + key[i, 1]) MOD 10000H;
+			x3 := (x3 + key[i, 2]) MOD 10000H;
+			x4 := Mul(x4, key[i, 3]);
+			t1 := Mul(Xor(x1, x3), key[i, 4]);
+			t2 := Mul(t1 + Xor(x2, x4), key[i, 5]);
+			t1 := (t1 + t2) MOD 10000H;
+			x1 := Xor(x1, t2);
+			x4 := Xor(x4, t1);
+			t3 := Xor(x2, t1);
+			x2 := Xor(x3, t2);
+			x3 := t3
+		END;
+		b[0] := Mul(x1, key[8, 0]);
+		b[1] := (x3 + key[8, 1]) MOD 10000H;
+		b[2] := (x2 + key[8, 2]) MOD 10000H;
+		b[3] := Mul(x4, key[8, 3])
+	END IDEACipher;
+
+	PROCEDURE (SELF: Cipher) EncryptBlock (VAR buf : ARRAY OF SHORTCHAR; p : AO.SIZE), NEW;
+		VAR
+			b: Block;
+			i, j: AO.SIZE;
+
+
+	BEGIN
+		j := p;
+		FOR i := 0 TO 3 DO
+			b[i] := ORD(buf[j]) * 256 + ORD(buf[j + 1]);
+			INC(j, 2);
+			IF SELF.mode = Ciphers.CBC THEN
+				b[i] := Xor(b[i], SELF.iv[i])
+			END
+		END;
+		IDEACipher(b, SELF.ekeys);
+		j := p;
+		FOR i := 0 TO 3 DO
+			buf[j] := (*WARN CONV CAST*)SHORT(CHR(b[i] DIV 256 MOD 256));
+			INC(j);
+			buf[j] := (*WARN CONV CAST*)SHORT(CHR(b[i] MOD 256));
+			INC(j)
+		END;
+		IF SELF.mode = Ciphers.CBC THEN
+			SELF.iv := b
+		END
+	END EncryptBlock;
+
+	PROCEDURE (SELF: Cipher) DecryptBlock (VAR buf : ARRAY OF SHORTCHAR; p : AO.SIZE), NEW;
+		VAR
+			b0, b: Block;
+			i, j: AO.SIZE;
+
+
+	BEGIN
+		j := p;
+		FOR i := 0 TO 3 DO
+			b[i] := ORD(buf[j]) * 256 + ORD(buf[j + 1]);
+			INC(j, 2);
+			IF SELF.mode = Ciphers.CBC THEN
+				b0[i] := b[i]
+			END
+		END;
+		IDEACipher(b, SELF.dkeys);
+		j := p;
+		FOR i := 0 TO 3 DO
+			IF SELF.mode = Ciphers.CBC THEN
+				b[i] := Xor(b[i], SELF.iv[i]);
+				SELF.iv[i] := b0[i]
+			END;
+			buf[j] := (*WARN CONV CAST*)SHORT(CHR(b[i] DIV 256 MOD 256));
+			INC(j);
+			buf[j] := (*WARN CONV CAST*)SHORT(CHR(b[i] MOD 256));
+			INC(j)
+		END
+	END DecryptBlock;
+
+	PROCEDURE (SELF: Cipher) Encrypt* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		ASSERT(SELF.isKeyInitialized & (SELF.mode IN {Ciphers.ECB, Ciphers.CBC}));
+		ASSERT(len MOD SELF.blockSize = 0);
+		i := 0;
+		WHILE i < len DO
+			SELF.EncryptBlock(buf, ofs + i);
+			INC(i, SELF.blockSize)
+		END
+	END Encrypt;
+
+	PROCEDURE (SELF: Cipher) Decrypt* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		ASSERT(SELF.isKeyInitialized);
+		ASSERT(len MOD SELF.blockSize = 0);
+		i := 0;
+		WHILE i < len DO
+			SELF.DecryptBlock(buf, ofs + i);
+			INC(i, SELF.blockSize)
+		END
+	END Decrypt;
+
+END CryptoIDEA.

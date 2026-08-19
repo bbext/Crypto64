@@ -1,0 +1,87 @@
+MODULE CryptoTestDH;
+
+		IMPORT D := CryptoDiffieHellman, B := CryptoAosBigNumbers, Kernel, Log := (*CONV FROM KernelLog*)
+StdLog, AO := CryptoAosCompat, Services;
+
+		PROCEDURE Do (IN nprime : ARRAY OF SHORTCHAR);
+				VAR
+						t: AO.SIGNED64;
+						dh1, dh2: D.DH;
+						pub1, pub2: B.BigNumber;
+						k1, k2: B.BigNumber;
+
+
+		BEGIN
+				NEW(dh1); dh1.Init(0, nprime);
+				pub1 := dh1.GenPubKey();
+				Log.String("public key 1:");
+				Log.Ln;
+				B.Print(pub1);
+				Log.Ln;
+				NEW(dh2); dh2.Init(0, nprime);
+				pub2 := dh2.GenPubKey();
+				Log.String("public key 2:");
+				Log.Ln;
+				B.Print(pub2);
+				Log.Ln;
+				Log.Ln;
+				k1 := dh1.ComputeKey(pub2);
+				Log.String("key a:");
+				Log.Ln;
+				B.Print(k1);
+				Log.Ln;
+				t := Services.Ticks();
+				k2 := dh2.ComputeKey(pub1);
+				t := Services.Ticks() - t;
+				Log.String("key b:");
+				Log.Ln;
+				B.Print(k2);
+				Log.Ln;
+				IF (B.Cmp(k1, k2) = 0) THEN
+						Log.String("ok")
+				ELSE
+						Log.String("failed")
+				END;
+				Log.String(" (");
+				Log.Int(t);
+				Log.String(" ms)");
+				Log.Ln
+		END Do;
+
+		PROCEDURE SSL192* ;
+
+		BEGIN
+				Do("dh.ssl.192")
+		END SSL192;
+
+		PROCEDURE SSL512* ;
+
+		BEGIN
+				Do("dh.ssl.512")
+		END SSL512;
+
+		PROCEDURE SSL1024* ;
+
+		BEGIN
+				Do("dh.ssl.1024")
+		END SSL1024;
+
+		PROCEDURE SSH* ;
+
+		BEGIN
+				Do("dh.ssh.group1")
+		END SSH;
+
+		PROCEDURE SSL2048* ;
+
+		BEGIN
+				Do("dh.2048.MODP.256")
+		END SSL2048;
+
+END CryptoTestDH.
+
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestDH.SSL192
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestDH.SSL512
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestDH.SSL1024
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestDH.SSH
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestDH.SSL2048

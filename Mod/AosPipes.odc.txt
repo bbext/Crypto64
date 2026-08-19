@@ -1,0 +1,180 @@
+MODULE CryptoAosPipes;
+
+(* Aos, Copyright 2001, Pieter Muller, ETH Zurich *)
+(** AUTHOR "pjm"; PURPOSE "Simple pipe object"; *)
+(* 2003.07.23 no tricks variant but working *)
+
+	IMPORT AO := CryptoAosCompat, Streams := CryptoAosStreams;
+
+	CONST
+		Ok = 0;
+		Closed = 4201;
+
+	TYPE
+				(** A pipe is a bounded buffer that can be used as an Streams Reader and Writer.  Everything sent to the sink can be read from the source. *)
+		Pipe* = POINTER TO RECORD
+			head, num : AO.SIZE;
+			buffer : POINTER TO ARRAY OF SHORTCHAR;
+			closed : BOOLEAN;
+						sender* : PipeSender;
+						receiver* : PipeReceiver;
+						asyncWriter : AsyncAction;
+						pendingWrites : PendingWrite
+		END;
+				PipeSender = POINTER TO RECORD(Streams.Sender) p:Pipe; END;
+				PipeReceiver = POINTER TO RECORD(Streams.Receiver) p:Pipe; END;
+				AsyncAction* = POINTER TO ABSTRACT RECORD END;
+				PendingWrite = POINTER TO RECORD 
+					buf : POINTER TO ARRAY OF SHORTCHAR;
+					ofs, len : AO.SIZE;
+					propagate : BOOLEAN; 
+					next : PendingWrite;
+				END;
+	TYPE
+(*makes a decoupled copy of a receiver*)
+(*internally it's a pipe that automatically reads the input in a continuous loop*)
+		ReadDecoupler* = POINTER TO EXTENSIBLE RECORD
+			pipe : Pipe;
+			inputReceiver : Streams.Receiver;
+			smallbuf : ARRAY 128 OF SHORTCHAR;
+			len : AO.SIZE;
+			res : INTEGER
+		END;
+
+		PROCEDURE (SELF: AsyncAction) Do* ():BOOLEAN, NEW, ABSTRACT ;
+
+		
+	PROCEDURE (SELF: Pipe) Available* (): AO.SIZE, NEW;
+	BEGIN
+		RETURN SELF.num
+	END Available;
+
+
+		PROCEDURE (SELF: Pipe) SendPending (VAR res : INTEGER), NEW;
+			VAR pendingWrite : PendingWrite;
+	BEGIN
+			LOOP 
+				
+				IF SELF.pendingWrites = NIL THEN res := Ok;RETURN; END;
+
+				pendingWrite := SELF.pendingWrites;
+				LOOP
+					IF pendingWrite.len = 0 THEN res := Ok; EXIT; END;
+					(*AWAITING*)
+					IF ~SELF.closed & (SELF.num >= LEN(SELF.buffer)) THEN
+						res := Ok; RETURN ;
+					END;
+					IF SELF.closed THEN
+						res := Closed; EXIT
+					ELSIF SELF.num < LEN(SELF.buffer) THEN
+						SELF.buffer[(SELF.head+SELF.num) MOD LEN(SELF.buffer)] := pendingWrite.buf[pendingWrite.ofs];
+						INC(pendingWrite.ofs); INC(SELF.num); DEC(pendingWrite.len)
+					END
+				END;
+				SELF.pendingWrites := SELF.pendingWrites.next;
+			END;
+			
+	END SendPending;
+
+	PROCEDURE (SELF: Pipe) Send* (IN buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE; propagate : BOOLEAN; VAR res : INTEGER), NEW;
+			VAR pendingWrite, tail : PendingWrite;i:INTEGER;
+	BEGIN
+	    ASSERT(len >= 0);
+			NEW(pendingWrite);
+			NEW(pendingWrite.buf, len);
+			FOR i := 0 TO (len -1) DO
+				pendingWrite.buf[i] := buf[ofs+i]
+			END;
+			pendingWrite.ofs := 0;
+			pendingWrite.len := len;
+			IF SELF.pendingWrites = NIL THEN 
+				SELF.pendingWrites := pendingWrite;
+			ELSE
+				tail := SELF.pendingWrites;
+				WHILE tail.next # NIL DO
+					tail := tail.next;
+				END;
+				tail.next := pendingWrite
+			END;
+			
+			SELF.SendPending(res);
+	END Send;
+
+	PROCEDURE (SELF: PipeSender) Send* (IN buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE; propagate : 		BOOLEAN; VAR res : INTEGER);
+		BEGIN
+			SELF.p.Send(buf, ofs, len, propagate,res)
+		END Send;
+
+	PROCEDURE (SELF: Pipe) Receive* (VAR buf : ARRAY OF SHORTCHAR; ofs, size, min : AO.SIZE; VAR len : AO.SIZE; VAR res : INTEGER), NEW;
+
+	BEGIN
+			ASSERT((size > 0) & (min <= size) & (min >= 0));
+			len := 0;
+			
+			LOOP
+				IF min > 0 THEN 
+					
+					(*AWAITING*)
+					WHILE (SELF.num <= 0) & ~SELF.closed DO
+						IF SELF.pendingWrites # NIL THEN
+							SELF.SendPending(res);
+						ELSE
+							IF ~SELF.asyncWriter.Do() THEN
+								EXIT;
+							END;
+						END;
+					END
+				END;
+
+				IF SELF.num > 0 THEN
+					buf[ofs] := SELF.buffer[SELF.head];
+					SELF.head := (SELF.head + 1) MOD LEN(SELF.buffer);
+					DEC(SELF.num); INC(ofs); INC(len); DEC(min); DEC(size)
+				ELSIF SELF.closed THEN
+					res := Closed; EXIT
+				END;
+				IF (SELF.num = 0) & (min <= 0) OR (size = 0) THEN res := Ok; EXIT END
+			END
+	END Receive;
+
+	PROCEDURE (SELF: PipeReceiver) Receive* (VAR buf : ARRAY OF SHORTCHAR; ofs, size, min : AO.SIZE; VAR len : AO.SIZE; VAR res : INTEGER);
+
+	BEGIN
+			SELF.p.Receive(buf, ofs,size, min, len,res)
+	END Receive;
+
+	PROCEDURE (SELF: Pipe) Init* (size : AO.SIZE; asyncWriter : AsyncAction), NEW;
+
+	BEGIN
+		SELF.head := 0;
+		SELF.num := 0;
+		IF (SELF.buffer = NIL) OR (LEN(SELF.buffer) # size) THEN
+			NEW(SELF.buffer, size)
+		END;
+				NEW(SELF.receiver); SELF.receiver.p := SELF;
+				NEW(SELF.sender); SELF.sender.p := SELF;				
+		SELF.closed := FALSE;
+
+				SELF.asyncWriter := asyncWriter;
+	END Init;
+
+	PROCEDURE (SELF: Pipe) Close* , NEW;
+	BEGIN
+		SELF.closed := TRUE
+	END Close;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: ReadDecoupler) InitReadDecoupler* (inputReceiver : Streams.Receiver; asyncWriter : AsyncAction), NEW;
+
+	BEGIN
+		NEW(SELF.pipe); SELF.pipe.Init(128, asyncWriter );
+		SELF.inputReceiver := inputReceiver
+	END InitReadDecoupler;
+
+	PROCEDURE (SELF: ReadDecoupler) Receive* (VAR buf : ARRAY OF SHORTCHAR; ofs, size, min : AO.SIZE; VAR len : AO.SIZE; VAR res : INTEGER), NEW;
+
+	BEGIN
+		SELF.pipe.Receive(buf, ofs, size, min, len, res)
+	END Receive;
+
+END CryptoAosPipes.

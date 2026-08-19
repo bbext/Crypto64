@@ -1,0 +1,520 @@
+MODULE CryptoFortuna;
+
+	(**
+	AUTHOR: Alexey Morozov
+	PURPOSE: Building blocks for Fortuna cryptographic pseudorandom generator
+					by Niels Ferguson, Bruce Schneier, Tadayoshi Kohno ( https://www.schneier.com/wp-content/uploads/2015/12/fortuna.pdf ).
+					PyCrypto 2.6.1 ( https://www.dlitz.net/software/pycrypto ) was used as a reference for testing the code.
+	*)
+
+	IMPORT CryptoSHA256, CryptoCiphers, AO := CryptoAosCompat, SYSTEM;
+
+	CONST
+		HashSize* = 32;
+		CipherBlockSize* = 16;
+		CipherKeySize* = 32;
+		CounterSize* = CipherBlockSize;
+		MaxRandomEventDataLen* = 32;
+		NumPools* = 32;
+		MinPoolSize* = 64;
+		ReseedIntervalMs = 100;
+
+	TYPE
+		Crc32* = RECORD
+			poly : AO.UNSIGNED32;
+			xorMsk : AO.UNSIGNED32;
+			table : ARRAY 256 OF SET;
+			crc : AO.UNSIGNED32
+		END;
+				IntGen* = POINTER TO ABSTRACT RECORD END;
+	TYPE
+		Counter* = RECORD
+			data : ARRAY CounterSize OF SHORTCHAR
+		END;
+		Hash* = RECORD
+			hash : CryptoSHA256.SHA256
+		END;
+		Generator* = RECORD
+			isSeeded : BOOLEAN;
+			key : ARRAY CipherKeySize OF SHORTCHAR;
+			ctr : Counter;
+			hash : Hash;
+			cipher : CryptoCiphers.Cipher
+		END;
+		Pool* = RECORD
+			length : AO.SIZE;
+			hash : Hash
+		END;
+		ReseedPoolIndices* = RECORD
+			r, k, mask : AO.SIZE
+		END;
+		Accumulator* = RECORD
+			reseedCount : AO.SIZE;
+			generator : Generator;
+			pools : ARRAY NumPools OF Pool;
+			lastReseedTime : AO.SIGNED64;
+			seedBuf : ARRAY NumPools * HashSize OF SHORTCHAR
+		END;
+		Permutation* = RECORD
+			size : AO.SIZE;
+			values : ARRAY 256 OF AO.UNSIGNED8
+		END;
+		EntropyCollector* = RECORD
+			poolIndex : INTEGER
+		END;
+		PROCEDURE (SELF : IntGen) Do*(): AO.SIGNED32, NEW, ABSTRACT;
+
+	PROCEDURE (VAR SELF: Crc32) Init* (polynomial : AO.UNSIGNED32; initialValue : AO.UNSIGNED32; xorMask : AO.UNSIGNED32), NEW;
+		VAR
+			k, m: INTEGER;
+							v	: AO.UNSIGNED32;
+	BEGIN
+		polynomial := (*WARN CONV CAST*)AO.TOUNSIGNED32(0EDB88320H);
+		initialValue := (*WARN CONV CAST*)AO.TOUNSIGNED32(0FFFFFFFFH);
+		xorMask := (*WARN CONV CAST*)AO.TOUNSIGNED32(0FFFFFFFFH);
+		IF AO.UNeq32(SELF.poly, polynomial) THEN
+			SELF.poly := polynomial;
+			FOR k := 0 TO 256 - 1 DO
+				v := AO.TOUNSIGNED32(k);
+				FOR m := 0 TO 8 - 1 DO
+					IF AO.UBITS32(v) * {0} # {} THEN
+						v := AO.TOUNSIGNED32(ORD((AO.UBITS32(SELF.poly) / AO.UBITS32(AO.ULSH32(v, (-1))))))
+					ELSE
+						v := AO.ULSH32(v, (-1))
+					END
+				END;
+				SELF.table[k] := AO.UBITS32(v)
+			END
+		END;
+		SELF.crc := initialValue;
+		SELF.xorMsk := xorMask
+	END Init;
+
+	PROCEDURE (VAR SELF: Crc32) InitDefault* (), NEW;
+
+	BEGIN
+
+		SELF.Init(AO.TOUNSIGNED32(0EDB88320H),AO.TOUNSIGNED32(0FFFFFFFFH), AO.TOUNSIGNED32(0FFFFFFFFH))
+	END InitDefault;
+
+	PROCEDURE (VAR SELF: Crc32) OPS8* (data : AO.SIGNED8), NEW;
+
+	BEGIN
+		SELF.crc := AO.TOUNSIGNED32(ORD(SELF.table[ORD(AO.UBITS32(SELF.crc) / BITS(data))] / AO.UBITS32(AO.ULSH32(SELF.crc, (-8)))))
+	END OPS8;
+
+	PROCEDURE (VAR SELF: Crc32) OPSC* (data : SHORTCHAR), NEW;
+
+	BEGIN
+		SELF.crc := AO.TOUNSIGNED32(ORD(SELF.table[ORD(AO.UBITS32(SELF.crc) / BITS(ORD(data)))] / AO.UBITS32(AO.ULSH32(SELF.crc, (-8)))))
+	END OPSC;
+
+	PROCEDURE (VAR SELF: Crc32) OPS16* (data : AO.SIGNED16), NEW;
+
+	BEGIN
+		SELF.OPS8(SYSTEM.VAL(AO.SIGNED8,data));
+		SELF.OPS8(SYSTEM.VAL(AO.SIGNED8,SYSTEM.LSH(data, (-8))))
+	END OPS16;
+
+	PROCEDURE (VAR SELF: Crc32) OPS32* (data : AO.SIGNED32), NEW;
+
+	BEGIN
+		SELF.OPS8(SYSTEM.VAL(AO.SIGNED8,data));
+		SELF.OPS8(SYSTEM.VAL(AO.SIGNED8,SYSTEM.LSH(data, (-8))));
+		SELF.OPS8(SYSTEM.VAL(AO.SIGNED8,SYSTEM.LSH(data, (-16))));
+		SELF.OPS8(SYSTEM.VAL(AO.SIGNED8,SYSTEM.LSH(data, (-24))))
+	END OPS32;
+
+	PROCEDURE (VAR SELF: Crc32) OPS64* (data : AO.SIGNED64), NEW;
+
+	BEGIN
+		SELF.OPS8(AO.TOSIGNED8(AO.SHORT16(AO.SHORT32(AO.SHORT64(data)))));
+		SELF.OPS8(AO.TOSIGNED8(AO.SHORT16(AO.SHORT32(AO.SHORT64(AO.ULSH64(AO.TOUNSIGNED64(data), (-8)))))));
+		SELF.OPS8(AO.TOSIGNED8(AO.SHORT16(AO.SHORT32(AO.SHORT64(AO.ULSH64(AO.TOUNSIGNED64(data), (-16)))))));
+		SELF.OPS8(AO.TOSIGNED8(AO.SHORT16(AO.SHORT32(AO.SHORT64(AO.ULSH64(AO.TOUNSIGNED64(data), (-24)))))));
+		SELF.OPS8(AO.TOSIGNED8(AO.SHORT16(AO.SHORT32(AO.SHORT64(AO.ULSH64(AO.TOUNSIGNED64(data), (-32)))))));
+		SELF.OPS8(AO.TOSIGNED8(AO.SHORT16(AO.SHORT32(AO.SHORT64(AO.ULSH64(AO.TOUNSIGNED64(data), (-40)))))));
+		SELF.OPS8(AO.TOSIGNED8(AO.SHORT16(AO.SHORT32(AO.SHORT64(AO.ULSH64(AO.TOUNSIGNED64(data), (-48)))))));
+		SELF.OPS8(AO.TOSIGNED8(AO.SHORT16(AO.SHORT32(AO.SHORT64(AO.ULSH64(AO.TOUNSIGNED64(data), (-56)))))))
+	END OPS64;
+
+	PROCEDURE (VAR SELF: Crc32) OP6* (IN data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		WHILE dataLen > 0 DO
+			SELF.crc := AO.TOUNSIGNED32(ORD(SELF.table[ORD(AO.UBITS32(SELF.crc) / BITS(ORD(data[dataOffs])))] / AO.UBITS32(AO.ULSH32(SELF.crc, (-8)))));
+			INC(dataOffs);
+			DEC(dataLen)
+		END
+	END OP6;
+
+	PROCEDURE (VAR SELF: Crc32) OP7* (IN str : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			k: AO.SIZE;
+
+	BEGIN
+		k := 0;
+		WHILE str[k] # 0X DO
+			SELF.OPSC(str[k]);
+			INC(k)
+		END
+	END OP7;
+
+	PROCEDURE (VAR SELF: Crc32) Get* (): AO.UNSIGNED32, NEW;
+
+	BEGIN
+		RETURN AO.TOUNSIGNED32(ORD(AO.UBITS32(SELF.crc) / (AO.UBITS32(SELF.xorMsk))))
+	END Get;
+
+	PROCEDURE (VAR SELF: Counter) Clear* (), NEW;
+		VAR
+			k: INTEGER;
+
+	BEGIN
+		k := 0;
+		WHILE k < CipherBlockSize DO
+			SELF.data[k] := 0X;
+			INC(k)
+		END
+	END Clear;
+
+	PROCEDURE (VAR SELF: Counter) Set* (IN value : ARRAY OF SHORTCHAR; offs : AO.SIZE), NEW;
+		VAR
+			k: INTEGER;
+
+	BEGIN
+		ASSERT(LEN(value) >= offs + CipherBlockSize);
+		k := 0;
+		WHILE k < CipherBlockSize DO
+			SELF.data[k] := value[offs + k];
+			INC(k)
+		END
+	END Set;
+
+	PROCEDURE (VAR SELF: Counter) Inc* (increment : AO.SIGNED32), NEW;
+		VAR
+			d: AO.UNSIGNED32;
+			k: INTEGER;
+
+	BEGIN
+		ASSERT(increment > 0);
+		d := AO.TOUNSIGNED32(ORD(SELF.data[CipherBlockSize - 1]) + increment);
+		SELF.data[CipherBlockSize - 1] := (*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED32(d)));
+		k := CipherBlockSize - 1;
+		WHILE (k # 0) & (AO.UGtr32(d, AO.TOUNSIGNED32(255))) DO
+			DEC(k);
+			d := AO.UAdd32(AO.ULSH32(d, (-8)), AO.TOUNSIGNED32(ORD(SELF.data[k])));
+			SELF.data[k] := (*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED32(d)))
+		END
+	END Inc;
+
+	PROCEDURE (VAR SELF: Hash) Init* (), NEW;
+
+	BEGIN
+		SELF.hash.Initialize
+	END Init;
+
+	PROCEDURE (VAR SELF: Hash) Update* (IN data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.hash.OPERATORBRACKETS(data, dataOffs, dataLen)
+	END Update;
+
+	PROCEDURE (VAR SELF: Hash) GetHash* (VAR hashValue : ARRAY OF SHORTCHAR; hashValueOffs : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.hash.GetHash(hashValue, hashValueOffs);
+		SELF.hash.Initialize;
+		SELF.hash.OPERATORBRACKETS(hashValue, hashValueOffs, CryptoSHA256.HashSize);
+		SELF.hash.GetHash(hashValue, hashValueOffs)
+	END GetHash;
+
+	PROCEDURE (VAR SELF: Generator) Init* (), NEW;
+		VAR
+			k: AO.SIZE;
+
+	BEGIN
+		IF SELF.cipher = NIL THEN
+			SELF.cipher := CryptoCiphers.NewCipher("CryptoAES");
+			ASSERT(SELF.cipher # NIL)
+		END;
+		SELF.isSeeded := FALSE;
+		SELF.hash.Init;
+		SELF.ctr.Clear;
+		k := 0;
+		WHILE k < CipherKeySize DO
+			SELF.key[k] := 0X;
+			INC(k)
+		END
+	END Init;
+
+	PROCEDURE (VAR SELF: Generator) Reseed* (IN seed : ARRAY OF SHORTCHAR; seedOffs, seedLen : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.hash.Init;
+		SELF.hash.Update(SELF.key, 0, CipherKeySize);
+		SELF.hash.Update(seed, seedOffs, seedLen);
+		SELF.hash.GetHash(SELF.key, 0);
+		SELF.ctr.Inc(1);
+		SELF.cipher.InitKey(SELF.key, CipherKeySize);
+		SELF.cipher.SetIV(SELF.ctr.data, CryptoCiphers.CTR);
+		SELF.isSeeded := TRUE
+	END Reseed;
+
+	PROCEDURE (VAR SELF: Generator) GenerateBlocksPrivate (VAR buf : ARRAY OF SHORTCHAR; bufOffs, numBlocks : AO.SIZE), NEW;
+		VAR
+			k, bufLen: AO.SIZE;
+
+	BEGIN
+		k := 0;
+				bufLen := numBlocks * CipherBlockSize;
+		WHILE k < bufLen DO
+			buf[k + bufOffs] := 0X;
+			INC(k)
+		END;
+		SELF.cipher.Encrypt(buf, bufOffs, bufLen);
+		SELF.ctr.Inc((numBlocks))
+	END GenerateBlocksPrivate;
+
+	PROCEDURE (VAR SELF: Generator) ChangeKeyPrivate (), NEW;
+
+	BEGIN
+		SELF.GenerateBlocksPrivate(SELF.key, 0, CipherKeySize DIV CipherBlockSize);
+		SELF.cipher.InitKey(SELF.key, CipherKeySize);
+		SELF.cipher.SetIV(SELF.ctr.data, CryptoCiphers.CTR)
+	END ChangeKeyPrivate;
+
+	PROCEDURE (VAR SELF: Generator) Generate* (VAR data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+		VAR
+			block: ARRAY CipherBlockSize OF SHORTCHAR;
+
+		VAR
+			numBlocks: AO.SIZE;
+			n: AO.SIZE;
+			k: INTEGER;
+
+	BEGIN
+		WHILE dataLen >= 1048576 DO
+			SELF.GenerateBlocksPrivate(data, dataOffs, 1048576 DIV CipherBlockSize);
+			SELF.ChangeKeyPrivate;
+			INC(dataOffs, 1048576);
+			DEC(dataLen, 1048576)
+		END;
+		IF dataLen > 0 THEN
+			IF dataLen >= CipherBlockSize THEN
+				numBlocks := dataLen DIV CipherBlockSize;
+				SELF.GenerateBlocksPrivate(data, dataOffs, numBlocks);
+				n := numBlocks * CipherBlockSize;
+				INC(dataOffs, n);
+				DEC(dataLen, n)
+			END;
+			IF dataLen > 0 THEN
+				SELF.GenerateBlocksPrivate(block, 0, 1);
+				k := 0;
+				WHILE dataLen > 0 DO
+					data[dataOffs] := block[k];
+					INC(k);
+					INC(dataOffs);
+					DEC(dataLen)
+				END
+			END;
+			SELF.ChangeKeyPrivate
+		END
+	END Generate;
+
+	PROCEDURE (VAR SELF: Pool) Init* (), NEW;
+
+	BEGIN
+		SELF.hash.Init;
+		SELF.length := 0
+	END Init;
+
+	PROCEDURE (VAR SELF: Pool) Append* (IN data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.hash.Update(data, dataOffs, dataLen);
+		INC(SELF.length, dataLen)
+	END Append;
+
+	PROCEDURE (VAR SELF: Pool) GetHash* (VAR hashValue : ARRAY OF SHORTCHAR; hashValueOffs : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.hash.GetHash(hashValue, hashValueOffs)
+	END GetHash;
+
+	PROCEDURE (VAR SELF: ReseedPoolIndices) Init* (reseedCount : AO.SIZE), NEW;
+
+	BEGIN
+		ASSERT(reseedCount >= 1);
+		SELF.r := reseedCount;
+		SELF.k := 0;
+		SELF.mask := 0
+	END Init;
+
+	PROCEDURE (VAR SELF: ReseedPoolIndices) GetNext* (VAR index : AO.SIZE): BOOLEAN, NEW;
+
+	BEGIN
+		IF (SELF.k < NumPools) & (BITS(SELF.mask) * BITS(SELF.r) = {}) THEN
+			SELF.mask := ORD(BITS(SYSTEM.LSH(SELF.mask, 1)) + {0});
+			index := SELF.k;
+			INC(SELF.k);
+			RETURN TRUE
+		ELSE
+			RETURN FALSE
+		END
+	END GetNext;
+
+	PROCEDURE (VAR SELF: Accumulator) Init* (), NEW;
+		VAR
+			k: AO.SIZE;
+
+
+	BEGIN
+		FOR k := 0 TO LEN(SELF.pools) - 1 DO
+			SELF.pools[k].Init
+		END;
+		SELF.reseedCount := 0;
+		SELF.generator.Init;
+		SELF.lastReseedTime := MIN(AO.SIGNED64)
+	END Init;
+
+	PROCEDURE (VAR SELF: Accumulator) Generate* (currentTimeMs : AO.SIGNED32; VAR data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+		VAR
+			inds: ReseedPoolIndices;
+
+		VAR
+			seedLen, ind: AO.SIZE;
+
+	BEGIN
+		IF (SELF.pools[0].length >= MinPoolSize) & ((SELF.lastReseedTime = MIN(AO.SIGNED64)) OR (SELF.lastReseedTime > currentTimeMs) OR (currentTimeMs - SELF.lastReseedTime > ReseedIntervalMs)) THEN
+			INC(SELF.reseedCount);
+			inds.Init(SELF.reseedCount);
+			seedLen := 0;
+			WHILE inds.GetNext(ind) DO
+				SELF.pools[ind].GetHash(SELF.seedBuf, seedLen);
+				SELF.pools[ind].Init;
+				INC(seedLen, HashSize)
+			END;
+			SELF.generator.Reseed(SELF.seedBuf, 0, seedLen);
+			SELF.lastReseedTime := (*WARN CONV CAST*)LONG(currentTimeMs)
+		END;
+		ASSERT(SELF.reseedCount # 0);
+		SELF.generator.Generate(data, dataOffs, dataLen)
+	END Generate;
+
+	PROCEDURE (VAR SELF: Accumulator) AddRandomEvent* (sourceNum : INTEGER; poolIndex : AO.SIZE; IN data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+		VAR
+			buf: ARRAY 2 OF SHORTCHAR;
+
+
+	BEGIN
+		ASSERT((sourceNum >= 0) & (sourceNum <= 255));
+		ASSERT((poolIndex >= 0) & (poolIndex < NumPools));
+		ASSERT((dataLen > 0) & (dataLen <= MaxRandomEventDataLen));
+		buf[0] := (*WARN CONV CAST*)SHORT(CHR(sourceNum));
+		buf[1] := (*WARN CONV CAST*)SHORT(CHR(dataLen));
+		SELF.pools[poolIndex].Append(buf, 0, 2);
+		SELF.pools[poolIndex].Append(data, dataOffs, dataLen)
+	END AddRandomEvent;
+
+	PROCEDURE (VAR SELF: Accumulator) IsReady* (currentTimeMs : AO.SIGNED32): BOOLEAN, NEW;
+
+	BEGIN
+		RETURN SELF.generator.isSeeded OR ((SELF.pools[0].length >= MinPoolSize) & ((SELF.lastReseedTime = MIN(AO.SIGNED64)) OR (SELF.lastReseedTime > currentTimeMs) OR (currentTimeMs - SELF.lastReseedTime > ReseedIntervalMs)))
+	END IsReady;
+
+	PROCEDURE (VAR SELF: Permutation) Init* (rand : IntGen; poolSize : AO.SIZE), NEW;
+		VAR
+			k: AO.SIZE;
+
+		PROCEDURE Swap (VAR x, y : AO.UNSIGNED8);
+			VAR
+				z: AO.UNSIGNED8;
+
+		BEGIN
+			z := x;
+			x := y;
+			y := z
+		END Swap;
+
+	BEGIN
+		ASSERT((poolSize > 0) & (poolSize <= 256));
+		SELF.size := poolSize;
+		k := 0;
+		WHILE k < SELF.size DO
+			SELF.values[k] := SYSTEM.VAL(AO.UNSIGNED8,k);
+			INC(k)
+		END;
+		IF rand # NIL THEN
+			k := 0;
+			WHILE k < SELF.size DO
+				Swap(SELF.values[rand.Do() MOD SELF.size], SELF.values[rand.Do() MOD SELF.size]);
+				INC(k)
+			END
+		END
+	END Init;
+
+	PROCEDURE (VAR SELF: Permutation) Get* (pos : AO.SIZE): AO.SIZE, NEW;
+
+	BEGIN
+		ASSERT((pos >= 0) & (pos < SELF.size));
+		RETURN AO.TOSIGNED32(AO.LONG16(AO.LONG8(SELF.values[pos])))
+	END Get;
+
+	PROCEDURE (VAR SELF: EntropyCollector) Init* (), NEW;
+
+	BEGIN
+		SELF.poolIndex := 0
+	END Init;
+
+	PROCEDURE (VAR SELF: EntropyCollector) Collect* (VAR accumulator : Accumulator; sourceNum : INTEGER; IN data : ARRAY OF SHORTCHAR; dataOffs, dataLen : AO.SIZE), NEW;
+
+	BEGIN
+		IF dataLen # 0 THEN
+			accumulator.AddRandomEvent(sourceNum, SELF.poolIndex, data, dataOffs, dataLen);
+			INC(SELF.poolIndex);
+			IF SELF.poolIndex >= NumPools THEN
+				SELF.poolIndex := 0
+			END
+		END
+	END Collect;
+
+	PROCEDURE Int16ToBytes* (v : INTEGER; VAR bytes : ARRAY OF SHORTCHAR; VAR bytesOffs : AO.SIZE);
+
+	BEGIN
+		bytes[bytesOffs + 0] := (*WARN CONV CAST*)SHORT(CHR(v));
+		bytes[bytesOffs + 1] := (*WARN CONV CAST*)SHORT(CHR(SYSTEM.LSH(v, (-8))));
+		INC(bytesOffs, 2)
+	END Int16ToBytes;
+
+	PROCEDURE Int24ToBytes* (v : AO.SIGNED32; VAR bytes : ARRAY OF SHORTCHAR; VAR bytesOffs : AO.SIZE);
+
+	BEGIN
+		bytes[bytesOffs + 0] := (*WARN CONV CAST*)SHORT(CHR(v));
+		bytes[bytesOffs + 1] := (*WARN CONV CAST*)SHORT(CHR(SYSTEM.LSH(v, (-8))));
+		bytes[bytesOffs + 2] := (*WARN CONV CAST*)SHORT(CHR(SYSTEM.LSH(v, (-16))));
+		INC(bytesOffs, 3)
+	END Int24ToBytes;
+
+	PROCEDURE Int32ToBytes* (v : AO.SIGNED32; VAR bytes : ARRAY OF SHORTCHAR; VAR bytesOffs : AO.SIZE);
+
+	BEGIN
+		bytes[bytesOffs + 0] := (*WARN CONV CAST*)SHORT(CHR(v));
+		bytes[bytesOffs + 1] := (*WARN CONV CAST*)SHORT(CHR(SYSTEM.LSH(v, (-8))));
+		bytes[bytesOffs + 2] := (*WARN CONV CAST*)SHORT(CHR(SYSTEM.LSH(v, (-16))));
+		bytes[bytesOffs + 3] := (*WARN CONV CAST*)SHORT(CHR(SYSTEM.LSH(v, (-24))));
+		INC(bytesOffs, 4)
+	END Int32ToBytes;
+
+	PROCEDURE IntToBytes* (v : AO.SIGNED64; VAR bytes : ARRAY OF SHORTCHAR; VAR bytesOffs : AO.SIZE; byteCount : AO.SIZE);
+
+	BEGIN
+		INC(bytesOffs, byteCount);
+		WHILE byteCount > 0 DO
+			bytes[bytesOffs] := (*WARN CONV CAST*)SHORT(CHR(v));
+			v := AO.TOSIGNED64(AO.ULSH64(AO.TOUNSIGNED64(v), (-8)));
+			DEC(byteCount)
+		END
+	END IntToBytes;
+
+END CryptoFortuna.

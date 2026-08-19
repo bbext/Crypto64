@@ -1,0 +1,616 @@
+MODULE CryptoGcm;
+
+	(* IMPLEMENTED BY Shelin Anton, PURPOSE GCM mode for block ciphers https://csrc.nist.rip/groups/ST/toolkit/BCM/documents/proposedmodes/gcm/gcm-spec.pdf*)
+
+	<odc-view type="StdStamps.StdView" w="1447800" h="164892" data="gvFTdGRTdGFtcHMuU3RkVmlld0Rlc2MA8VZpZXdzLlZpZXdEZXNjAPBTdG9yZXMuU3RvcmVEZXNjAAAAAAAAAAAAAAAAAHUAAAAAAAIHAGWJDTOrAQAARUgLAEoBAADLG46MqgEAAL5FCwBVAwAAYhO57JMBAAC9RQsANgQAAOAU4klgAQAAvEULAOEFAAC9IGtT4QAAALVFCwC4AwAApjAiJqIAAAC0RQsA9gUAAIoOiDgBAAAAs0ULALYEAAA="/>
+
+	IMPORT SYSTEM, U := CryptoUtils, StdLog, Ciphers := CryptoCiphers;
+
+	TYPE
+		FieldElement = ARRAY 4 OF SET;
+
+		GcmMode* = POINTER TO RECORD
+			cipher: Ciphers.Cipher;
+			H(*authKey*), J0(*iv*) : FieldElement;
+		END;
+
+	VAR
+		R: FieldElement;
+
+	CONST
+		DECRYPTION_FAIL = 1;
+		DECRYPTION_SUCCESS = 0;
+
+	PROCEDURE XorBytes (IN a, b: ARRAY OF SHORTCHAR; aOfs, bOfs, resOfs, len: INTEGER; OUT res: ARRAY OF SHORTCHAR);
+		VAR i: INTEGER;
+	BEGIN
+		FOR i := 0 TO len - 1 DO
+			res[resOfs + i] := SHORT(CHR(ORD(BITS(ORD(a[aOfs + i])) / BITS(ORD(b[bOfs + i])))))
+		END
+	END XorBytes;
+
+	PROCEDURE IsBitSet (a: FieldElement; n: INTEGER): BOOLEAN;
+	BEGIN
+		(*n := 127 - n; *)
+		RETURN (31 - (n MOD 32)) IN a[n DIV 32]
+	END IsBitSet;
+
+	PROCEDURE Add (a, b: FieldElement; VAR res: FieldElement);
+	BEGIN
+		res[0] := a[0] / b[0];
+		res[1] := a[1] / b[1];
+		res[2] := a[2] / b[2];
+		res[3] := a[3] / b[3]
+	END Add;
+
+	PROCEDURE ShiftRight (a: FieldElement; OUT res: FieldElement);
+	BEGIN
+		res[0] := SYSTEM.LSH(a[0],  - 1);
+		res[1] := SYSTEM.LSH(a[1],  - 1);
+		res[2] := SYSTEM.LSH(a[2],  - 1);
+		res[3] := SYSTEM.LSH(a[3],  - 1);
+
+		IF 0 IN a[0] THEN res[1] := res[1] + {31}; END;
+		IF 0 IN a[1] THEN res[2] := res[2] + {31}; END;
+		IF 0 IN a[2] THEN res[3] := res[3] + {31}; END;
+	END ShiftRight;
+
+	PROCEDURE MulP (a: FieldElement; OUT res: FieldElement);
+	BEGIN
+		ShiftRight(a, res);
+		IF IsBitSet(a, 127) THEN
+			(*StdLog.String("do xor R");StdLog.Ln; *)
+			Add(res, R, res)
+		END;
+	END MulP;
+
+	PROCEDURE Zero (OUT res: FieldElement);
+	BEGIN
+		res[0] := {};
+		res[1] := {};
+		res[2] := {};
+		res[3] := {}
+	END Zero;
+
+	PROCEDURE Copy (a: FieldElement; OUT res: FieldElement);
+	BEGIN
+		res[0] := a[0];
+		res[1] := a[1];
+		res[2] := a[2];
+		res[3] := a[3]
+	END Copy;
+
+	PROCEDURE FromBytes (IN buf: ARRAY OF SHORTCHAR; ofs: INTEGER; OUT res: FieldElement);
+		VAR i: INTEGER;
+	BEGIN
+		FOR i := 0 TO 3 DO
+			res[i] := U.SetFromBufferBE(buf, ofs + 4 * i)
+		END;
+	END FromBytes;
+
+	PROCEDURE FromInteger (i: INTEGER; OUT res: FieldElement);
+	BEGIN
+		res[0] := BITS(i);
+		res[1] := {};
+		res[2] := {};
+		res[3] := {}
+	END FromInteger;
+
+	PROCEDURE ToBytes (IN f: FieldElement; VAR buf: ARRAY OF SHORTCHAR; ofs: INTEGER);
+		VAR i: INTEGER;
+	BEGIN
+		FOR i := 0 TO 3 DO
+			U.SetToBufferBE(f[i], buf, ofs + 4 * i)
+		END;
+	END ToBytes;
+
+	PROCEDURE PrintFEHex (fe: FieldElement);
+		VAR bytes: ARRAY 16 OF SHORTCHAR;
+	BEGIN
+		ToBytes(fe, bytes, 0);
+		U.PrintHex(bytes, 0, 16)
+	END PrintFEHex;
+
+	PROCEDURE Mul (x, y: FieldElement; OUT z: FieldElement);
+		VAR i: INTEGER; v: FieldElement;
+	BEGIN
+		Zero(z);
+		Copy(y, v);
+		(*StdLog.String("x bits = ");
+		FOR i := 0 TO 127 DO
+		IF IsBitSet(x, i) THEN StdLog.Int(1) ELSE StdLog.Int(0) END;
+		END;
+		StdLog.Ln; *)
+		FOR i := 0 TO 127 DO
+			(*IF i < 5 THEN StdLog.String("i="); StdLog.Int(i); StdLog.Ln; END;*)
+			IF IsBitSet(x, i) THEN
+
+				Add(z, v, z);
+				(*IF i < 5 THEN StdLog.String("do xor="); PrintFEHex(z); StdLog.Ln; END;*)
+			END;
+			MulP(v, v);
+		END;
+	END Mul;
+
+
+	(** calculate the GMAC of ciphertext and AAD using an authentication subkey H *)
+	PROCEDURE GHASH (IN h: FieldElement; IN X: ARRAY OF SHORTCHAR; xLen: INTEGER; OUT res: ARRAY OF SHORTCHAR);
+		VAR i: INTEGER; x, y: FieldElement;
+	BEGIN
+		(*StdLog.String('GHASH'); StdLog.Ln; *)
+		ASSERT(xLen MOD 16 = 0);
+
+		Zero(y);
+		(*StdLog.String('Y_0=');
+		PrintFEHex(y); StdLog.Ln;*)
+		FOR i := 0 TO(xLen DIV 16) - 1 DO
+			(*StdLog.String('X_i=');
+			U.PrintHex(X, i * 16, 16); StdLog.Ln;*)
+			FromBytes(X, i * 16, x);
+			Add(y, x, y);
+			(*StdLog.String('sum=');
+			PrintFEHex(y); StdLog.Ln;*)
+			Mul(y, h, y);
+			(*StdLog.String('Y_i=');
+			PrintFEHex(y); StdLog.Ln;*)
+		END;
+		ToBytes(y, res, 0);
+	END GHASH;
+
+	PROCEDURE INC_32 (a: FieldElement; VAR res: FieldElement);
+	BEGIN
+		res[0] := a[0];
+		res[1] := a[1];
+		res[2] := a[2];
+		res[3] := BITS(ORD(a[3]) + 1);
+	END INC_32;
+
+	PROCEDURE Ceil (x, y: INTEGER): INTEGER;
+		VAR res: INTEGER;
+	BEGIN
+		res := x DIV y;
+		IF x MOD y # 0 THEN
+			INC(res)
+		END;
+		RETURN res;
+	END Ceil;
+
+	PROCEDURE (g: GcmMode) GCTR (
+	CB: FieldElement;
+	X: ARRAY OF SHORTCHAR; xOfs, xLen: INTEGER;
+	VAR Y: ARRAY OF SHORTCHAR; yOfs:INTEGER), NEW;
+		VAR n, i, len, lastOfset: INTEGER;
+			tmp: ARRAY 16 OF SHORTCHAR;
+	BEGIN
+		(*StdLog.String('GCTR'); StdLog.Ln;*)
+
+		IF xLen = 0 THEN
+
+			RETURN;
+		END;
+
+		n := xLen DIV 16;
+		lastOfset := xLen MOD 16;
+		IF lastOfset = 0 THEN DEC(n) END;
+		(*StdLog.String('n='); StdLog.Int(n + 1); StdLog.Ln;*)
+		FOR i := 0 TO n DO
+			IF (i = n) & (lastOfset # 0) THEN
+				len := lastOfset
+			ELSE
+				len := 16;
+			END;
+			(*StdLog.String('  X_i=');
+			U.PrintHex(X, i * 16, len); StdLog.Ln;*)
+
+			ToBytes(CB, tmp, 0);
+			(*StdLog.String('  CB_i=');
+			U.PrintHex(tmp, 0, 16); StdLog.Ln;*)
+			g.cipher.Encrypt(tmp, 0, 16);
+			(*StdLog.String('  AES=');
+			U.PrintHex(tmp, 0, 16); StdLog.Ln;*)
+
+			XorBytes(X, tmp, xOfs + i * 16, 0, yOfs + i * 16, len, Y);
+
+			(*StdLog.String('  Y_i=');
+			U.PrintHex(Y, yOfs + i * 16, len); StdLog.Ln;*)
+			INC_32(CB, CB);
+
+		END;
+
+	END GCTR;
+
+
+
+	PROCEDURE (g: GcmMode) Init* (cipher: Ciphers.Cipher; nonce: ARRAY OF SHORTCHAR; nonceLen: INTEGER), NEW;
+		VAR i, len_IV_bits, s, pos: INTEGER;
+			zero, J_0: ARRAY 16 OF SHORTCHAR;
+			tmp: POINTER TO ARRAY OF SHORTCHAR;
+
+	BEGIN
+		(*StdLog.String('IV');
+		U.PrintHex(nonce, 0, nonceLen); StdLog.Ln;*)
+
+
+		g.cipher := cipher;
+
+		FOR i := 0 TO(cipher.blockSize) - 1 DO
+			zero[i] := 0X;
+		END;
+
+		g.cipher.Encrypt(zero, 0, 16);
+		(*StdLog.String('H=');
+		U.PrintHex(zero, 0, 16); StdLog.Ln;*)
+		FromBytes(zero, 0, g.H);
+
+		len_IV_bits := nonceLen * 8;
+		IF len_IV_bits = 96 THEN
+			FOR i := 0 TO nonceLen - 1 DO
+				J_0[i] := nonce[i];
+			END;
+			J_0[i] := 0X; INC(i);
+			J_0[i] := 0X; INC(i);
+			J_0[i] := 0X; INC(i);
+			J_0[i] := 1X; INC(i);
+		ELSE
+			s := 128 * Ceil(len_IV_bits, 128) - len_IV_bits;
+			NEW(tmp, nonceLen + ((s + 64) DIV 8) + 8);
+			pos := 0;
+			FOR i := 0 TO nonceLen - 1 DO
+				tmp[pos] := nonce[i];
+				INC(pos);
+			END;
+			FOR i := 0 TO((s + 64) DIV 8) - 1 DO
+				tmp[pos] := 0X;
+				INC(pos);
+			END;
+			FOR i := 0 TO 3 DO
+				tmp[pos] := 0X;
+				INC(pos);
+			END;
+
+			U.IntToBufferBE(len_IV_bits, tmp, pos);
+			INC(pos, 4);
+
+			GHASH(g.H, tmp, pos, J_0);
+		END;
+		FromBytes(J_0, 0, g.J0);
+		(*StdLog.String('J0=');
+		PrintFEHex(g.J0); StdLog.Ln;*)
+	END Init;
+	
+	
+	
+	PROCEDURE (g: GcmMode) GetTag (
+	IN A, C: ARRAY OF SHORTCHAR;
+	len_A, ofs_C, len_C, t: INTEGER; OUT T: ARRAY OF SHORTCHAR), NEW;
+		VAR tmp: POINTER TO ARRAY OF SHORTCHAR;
+			len_C_bits, len_A_bits, u, v, pos, i, len_T: INTEGER;
+			S: ARRAY 16 OF SHORTCHAR;
+	BEGIN
+		(*StdLog.String("GetTag"); StdLog.Ln;*)
+		len_C_bits := len_C * 8;
+		len_A_bits := len_A * 8;
+
+		u := 128 * Ceil(len_C_bits, 128) - len_C_bits;
+		v := 128 * Ceil(len_A_bits, 128) - len_A_bits;
+		NEW(tmp, len_A + len_C + (v DIV 8) + (u DIV 8) + 8 + 8);
+
+		pos := 0;
+		FOR i := 0 TO len_A - 1 DO
+			tmp[pos] := A[i];
+			INC(pos);
+		END;
+		FOR i := 0 TO(v DIV 8) - 1 DO
+			tmp[pos] := 0X;
+			INC(pos);
+		END;
+		FOR i := 0 TO len_C - 1 DO
+			tmp[pos] := C[ofs_C + i];
+			INC(pos);
+		END;
+		FOR i := 0 TO(u DIV 8) - 1 DO
+			tmp[pos] := 0X;
+			INC(pos);
+		END;
+
+
+		FOR i := 0 TO 3 DO
+			tmp[pos] := 0X;
+			INC(pos);
+		END;
+		U.IntToBufferBE(len_A_bits, tmp, pos);
+		INC(pos, 4);
+
+		FOR i := 0 TO 3 DO
+			tmp[pos] := 0X;
+			INC(pos);
+		END;
+		U.IntToBufferBE(len_C_bits, tmp, pos);
+		INC(pos, 4);
+
+		(*StdLog.String('inp: ');
+		U.PrintHex(tmp, 0, pos); StdLog.Ln;*)
+
+		GHASH(g.H, tmp, pos, S);
+		(*StdLog.String('S: ');
+		U.PrintHex(S, 0, 16); StdLog.Ln;*)
+
+		g.GCTR(g.J0, S, 0, 16, T, 0);
+		len_T := t DIV 8;
+		(*StdLog.String('T: ');
+		U.PrintHex(T, 0, len_T); StdLog.Ln;
+		StdLog.String("END GetTag"); StdLog.Ln;*)
+	END GetTag;
+
+	PROCEDURE (g: GcmMode) Decrypt* (
+			IN C, A, T: ARRAY OF SHORTCHAR;
+			ofs_C, len_C, len_A, len_T: INTEGER;
+			VAR P: ARRAY OF SHORTCHAR;ofs_P : INTEGER;
+			OUT res: INTEGER), NEW;
+		VAR T2: ARRAY 16 OF SHORTCHAR;
+			i: INTEGER;
+			J01: FieldElement;
+	BEGIN
+		res := DECRYPTION_SUCCESS;
+		(*StdLog.String("Decrypt"); StdLog.Ln;*)
+		g.GetTag(A, C, len_A, ofs_C, len_C, len_T, T2);
+		FOR i := 0 TO(len_T DIV 8) - 1 DO
+			IF T[i] # T2[i] THEN
+				res := DECRYPTION_FAIL;
+			END;
+		END;
+		
+		INC_32(g.J0, J01);
+
+		g.GCTR(J01, C, ofs_C, len_C, P, ofs_P);
+		(*StdLog.String('P=');
+		U.PrintHex(P, ofs_P, len_C); StdLog.Ln;*)
+
+	END Decrypt;
+
+
+
+	PROCEDURE (g: GcmMode) Encrypt* (
+			IN P, A: ARRAY OF SHORTCHAR;
+			ofs_P, len_P, len_A: INTEGER;
+			len_T: INTEGER;
+			VAR C, T: ARRAY OF SHORTCHAR; ofs_C : INTEGER), NEW;
+		VAR J01: FieldElement;
+
+
+	BEGIN
+		(*StdLog.String("Encrypt"); StdLog.Ln;
+		StdLog.String('A=');
+		U.PrintHex(A, 0, len_A); StdLog.Ln;*)
+		INC_32(g.J0, J01);
+
+		g.GCTR(J01, P, ofs_P, len_P, C, ofs_C);
+
+		(*StdLog.String('C=');
+		U.PrintHex(C, 0, len_P); StdLog.Ln;*)
+		g.GetTag(A, C, len_A, ofs_C, len_P, len_T, T)
+	END Encrypt;
+	
+	PROCEDURE aes_gcm_encrypt (
+			IN P, K, IV, A: ARRAY OF SHORTCHAR;
+			len_P, len_K, len_IV, len_A: INTEGER;
+			t: INTEGER;
+			OUT C, T: ARRAY OF SHORTCHAR);
+		VAR g: GcmMode;c: Ciphers.Cipher;
+	BEGIN
+		c := Ciphers.NewCipher("CryptoAES");
+		c.InitKey(K, len_K * 8);
+		NEW(g);
+		g.Init(c, IV, len_IV);
+		g.Encrypt(P, A, 0, len_P, len_A, t, C, T, 0);
+	END aes_gcm_encrypt;
+
+	PROCEDURE aes_gcm_decrypt (
+			IN C, K, IV, A, T: ARRAY OF SHORTCHAR;
+			len_C, len_K, len_IV, len_A, len_T: INTEGER;
+			OUT P: ARRAY OF SHORTCHAR; OUT res: INTEGER);
+		VAR g: GcmMode;c: Ciphers.Cipher;
+
+	BEGIN
+		
+		c := Ciphers.NewCipher("CryptoAES");
+		c.InitKey(K, len_K * 8);
+		NEW(g);
+		g.Init(c, IV, len_IV);
+		g.Decrypt(C, A, T, 0, len_C, len_A, len_T, P, 0, res);
+
+	END aes_gcm_decrypt;
+
+	PROCEDURE AssertEqBytes (x, y: ARRAY OF SHORTCHAR; count: INTEGER);
+		VAR i: INTEGER;
+	BEGIN
+		FOR i := 0 TO count - 1 DO
+			ASSERT(x[i] = y[i])
+		END
+	END AssertEqBytes;
+
+	PROCEDURE Test*;
+		VAR hex, expected_tag, iv, key, plaintext, plaintextDecrypted, associated_data, expected_ciphertext, ciphertext, auth_tag: ARRAY 257 OF SHORTCHAR;
+			tag_length, res: INTEGER;
+	BEGIN
+
+		(* NIST Special Publication 800-38D *)
+		StdLog.String("NIST test vector 1 "); StdLog.Ln;
+		(* NIST test vector 1 *)
+		hex := '11754cd72aec309bf52f7687212e8957'; (* 16 bytes 128 bits*)
+		U.Hex2Bin(hex, 0, key, 0, 16);
+		hex := '3c819d9a9bed087615030b65'; (* 12 bytes*)
+		U.Hex2Bin(hex, 0, iv, 0, 12);
+
+		U.Hex2Bin("", 0, plaintext, 0, 0);
+		U.Hex2Bin("", 0, associated_data, 0, 0);
+		U.Hex2Bin("", 0, expected_ciphertext, 0, 0);
+
+		hex := '250327c674aaf477aef2675748cf6971'; (* 16 bytes 128 bits*)
+		U.Hex2Bin(hex, 0, expected_tag, 0, 16);
+		tag_length := 128;
+
+		aes_gcm_encrypt(plaintext, key, iv, associated_data,
+		0, 16, 12, 0, tag_length, ciphertext, auth_tag);
+
+
+		AssertEqBytes(auth_tag, expected_tag, 16);
+
+
+
+
+		StdLog.String("NIST test vector 2"); StdLog.Ln;
+		(* NIST test vector 2 *)
+		hex := "fe47fcce5fc32665d2ae399e4eec72ba"; (* 16 bytes 128 bits*)
+		U.Hex2Bin(hex, 0, key, 0, LEN(hex$)DIV 2);
+		StdLog.String("key"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+
+		hex := '5adb9609dbaeb58cbd6e7275'; (* 12 bytes*)
+		U.Hex2Bin(hex, 0, iv, 0, LEN(hex$) DIV 2);
+		StdLog.String("iv"); StdLog.Int(LEN(hex$) DIV 2); StdLog.Ln;
+
+		hex := '7c0e88c88899a779228465074797cd4c2e1498d259b54390b85e3eef1c02df60e743f1b840382c4bccaf' + 
+		'3bafb4ca8429bea063';
+		U.Hex2Bin(hex, 0, plaintext, 0, LEN(hex$) DIV 2);
+		StdLog.String("plaintext"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+
+		hex := "88319d6e1d3ffa5f987199166c8a9b56c2aeba5a";
+		U.Hex2Bin(hex, 0, associated_data, 0, LEN(hex$) DIV 2);
+		StdLog.String("associated_data"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+
+		hex := '98f4826f05a265e6dd2be82db241c0fbbbf9ffb1c173aa83964b7cf5393043736365253ddb' + 
+		'c5db8778371495da76d269e5db3e';
+		U.Hex2Bin(hex, 0, expected_ciphertext, 0, LEN(hex$) DIV 2);
+		StdLog.String("expected_ciphertext"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+
+
+		hex := "291ef1982e4defedaa2249f898556b47"; (* 16 bytes*)
+		U.Hex2Bin(hex, 0, expected_tag, 0, LEN(hex$) DIV 2);
+		StdLog.String("expected_tag"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+		tag_length := 128;
+
+		aes_gcm_encrypt(plaintext, key, iv, associated_data,
+		51, 16, 12, 20, tag_length, ciphertext, auth_tag);
+
+
+		AssertEqBytes(ciphertext, expected_ciphertext, 51);
+		AssertEqBytes(auth_tag, expected_tag, tag_length DIV 8);
+
+		aes_gcm_decrypt(ciphertext, key, iv, associated_data, auth_tag, 51, 16, 12, 20, tag_length, plaintextDecrypted, res);
+		ASSERT(res = 0);
+
+		AssertEqBytes(plaintext, plaintextDecrypted, 51);
+
+		StdLog.String("NIST test vector 3"); StdLog.Ln;
+		(* NIST test vector 3 *)
+
+		hex := "c7d9358af0fd737b118dbf4347fd252a"; (* 16 bytes 128 bits*)
+		U.Hex2Bin(hex, 0, key, 0, LEN(hex$)DIV 2);
+		StdLog.String("key"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+
+		hex := 
+		'83de9fa52280522b55290ebe3b067286' + 
+		'd87690560179554153cb3341a04e15c5' + 
+		'f35390602fa07e5b5f16dc38cf082b11' + 
+		'ad6dd3fab8552d2bf8d9c8981bbfc5f3' + 
+		'b57e5e3066e3df23f078fa25bce63d3d' + 
+		'6f86ce9fbc2c679655b958b09a991392' + 
+		'eb93b453ba6e7bf8242f8f61329e3afe' + 
+		'75d0f8536aa7e507d75891e540fb1d7e';
+		U.Hex2Bin(hex, 0, iv, 0, LEN(hex$) DIV 2);
+		StdLog.String("iv"); StdLog.Int(LEN(hex$) DIV 2); StdLog.Ln;
+
+		hex := '422f46223fddff25fc7a6a897d20dc8af6cc8a37828c90bd95fa9b943f460eb0a26f29ffc483592efb64' + 
+		'835774160a1bb5c0cd';
+		U.Hex2Bin(hex, 0, plaintext, 0, LEN(hex$) DIV 2);
+		StdLog.String("plaintext"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+
+		hex := '5d2b9a4f994ffaa03000149956c8932e85b1a167294514e388b73b10808f509ea73c075ecbf43c' + 
+		'ecfec13c202afed62110dabf8026d237f4e765853bc078f3afe081d0a1f8d8f7556b8e42acc3cc' + 
+		'e888262185048d67c55b2df1';
+		U.Hex2Bin(hex, 0, associated_data, 0, LEN(hex$) DIV 2);
+		StdLog.String("associated_data"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+
+		hex := '86eba4911578ac72ac30c25fe424da9ab625f29b5c00e36d2c24a2733dc40123dc57a8c9f1' + 
+		'7a24a26c09c73ad4efbcba3bab5b';
+		U.Hex2Bin(hex, 0, expected_ciphertext, 0, LEN(hex$) DIV 2);
+		StdLog.String("expected_ciphertext"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+
+
+		hex := '492305190344618cab8b40f006a57186';
+		U.Hex2Bin(hex, 0, expected_tag, 0, LEN(hex$) DIV 2);
+		StdLog.String("expected_tag"); StdLog.Int(LEN(hex$)DIV 2); StdLog.Ln;
+		tag_length := 128;
+
+		aes_gcm_encrypt(plaintext, key, iv, associated_data,
+		51, 16, 128, 90, tag_length, ciphertext, auth_tag);
+
+
+		AssertEqBytes(ciphertext, expected_ciphertext, 51);
+		AssertEqBytes(auth_tag, expected_tag, tag_length DIV 8);
+
+		aes_gcm_decrypt(ciphertext, key, iv, associated_data, auth_tag, 51, 16, 128, 90, tag_length, plaintextDecrypted, res);
+		ASSERT(res = 0);
+		AssertEqBytes(plaintext, plaintextDecrypted, 51);
+
+
+		StdLog.String("tests passed");
+	END Test;
+
+	PROCEDURE TestInplace*;
+		VAR key, iv, text, ad, tag : ARRAY 257 OF SHORTCHAR;
+				g: GcmMode;c: Ciphers.Cipher;
+				res : INTEGER;
+	BEGIN
+		U.Hex2Bin("c7d9358af0fd737b118dbf4347fd252a", 0, key, 0, 16);
+		U.Hex2Bin('5adb9609dbaeb58cbd6e7275', 0, iv, 0, 12);
+		text := "123hello world456";
+		ad := "ad";
+		c := Ciphers.NewCipher("CryptoAES");
+		c.InitKey(key, 128);
+		NEW(g);
+		g.Init(c, iv, 12);
+		g.Encrypt(text, ad, 3, 11, 2, 128, text, tag, 3);
+		StdLog.String("encrypted: "); StdLog.String(LONG(text)); StdLog.Ln;
+		g.Decrypt(text, ad, tag, 3, 11, 2, 128, text, 3, res);
+		StdLog.String("decrypted: "); StdLog.String(LONG(text)); StdLog.Ln;
+		ASSERT(res = 0);
+		ASSERT(text = "123hello world456");
+		StdLog.String("tests passed");
+	END TestInplace;
+	
+	PROCEDURE TestTemp2*;
+		VAR key, iv, text, ad, tag : ARRAY 257 OF SHORTCHAR;
+				g: GcmMode;c: Ciphers.Cipher;
+				res : INTEGER;
+	BEGIN
+		U.Hex2Bin("D52EE6AA736D845735997BCBF47A008A", 0, key, 0, 16);
+		U.Hex2Bin('E9BD0E8C124C7CA2B401186A', 0, iv, 0, 12);
+		U.Hex2Bin('1400000CBCAAC081DCD50B5D06DF383E', 0, text, 0, 16);
+		ad := "1234567890123";
+		c := Ciphers.NewCipher("CryptoAES");
+		c.InitKey(key, 128);
+		NEW(g);
+		g.Init(c, iv, 12);
+		StdLog.String("raw: "); U.PrintHex(text, 0, 16); StdLog.Ln;
+		g.Encrypt(text, ad, 0, 16, 13, 128, text, tag, 0);
+		StdLog.String("encrypted: "); U.PrintHex(text, 0, 16); StdLog.Ln;
+		g.Decrypt(text, ad, tag, 0, 16, 13, 128, text, 0, res);
+		StdLog.String("decrypted: "); U.PrintHex(text, 0, 16); StdLog.Ln;
+		ASSERT(res = 0);
+
+		StdLog.String("temp passed");
+	END TestTemp2;
+
+BEGIN
+
+	R[0] := BITS(0E1000000H);
+	R[1] := {};
+	R[2] := {};
+	R[3] := {};
+	(*StdLog.String("R="); PrintFEHex(R); StdLog.Ln;*)
+END CryptoGcm.
+
+<odc-view type="DevCommanders.StdView" w="190292" h="164892" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoGcm.Test;
+<odc-view type="DevCommanders.StdView" w="190292" h="164892" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoGcm.TestInplace;
+<odc-view type="DevCommanders.StdView" w="190292" h="164892" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoGcm.TestTemp2;

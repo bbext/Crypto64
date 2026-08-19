@@ -1,0 +1,147 @@
+MODULE CryptoPKCS1;
+(**
+	Implementation of the PKCS#1 encryption scheme for RSA.
+	See RFC 2437.
+	Timothée Martiel, 2014
+*)
+
+	IMPORT AosBigNumbers := CryptoAosBigNumbers, CryptoRSA, CryptoUtils, (*CONV FROM KernelLog*)
+StdLog, AO := CryptoAosCompat;
+
+	CONST
+		Trace = FALSE;
+
+	PROCEDURE Encrypt* (IN src : ARRAY OF SHORTCHAR; srcOfs, srcLen : AO.SIZE; key : CryptoRSA.Key; blockType : AO.SIGNED32; VAR dest : ARRAY OF SHORTCHAR; destOfs : AO.SIZE; VAR destLen : AO.SIZE);
+		VAR
+			k, padd: AO.SIZE;
+			counter, ofs: AO.SIZE;
+			encryptionBlock: POINTER TO ARRAY OF SHORTCHAR;
+			clear, cipher: AosBigNumbers.BigNumber;
+			nonzero: BOOLEAN;
+
+
+	BEGIN
+		ASSERT(key # NIL);
+		IF (blockType < 0) OR (blockType > 2) THEN
+			destLen := 0;
+			RETURN
+		END;
+		k := 4 * key.modulus.len;
+		IF k < 12 THEN
+			destLen := 0;
+			RETURN
+		END;
+		IF srcLen > k - 11 THEN
+			destLen := 0;
+			RETURN
+		END;
+		IF LEN(src) < srcOfs + srcLen THEN
+			destLen := 0;
+			RETURN
+		END;
+		IF LEN(dest) < destOfs + k THEN
+			destLen := 0;
+			RETURN
+		END;
+		NEW(encryptionBlock, k);
+		ofs := 0;
+		encryptionBlock[ofs] := 0X;
+		INC(ofs);
+		encryptionBlock[ofs] := SHORT(CHR(blockType));
+		INC(ofs);
+		padd := k - srcLen - 3;
+		ASSERT(padd >= 8);
+		CASE blockType OF
+			0 :	     FOR counter := ofs TO ofs + padd - 1 DO
+			encryptionBlock[counter] := 0X
+		END
+		|       1 :	     FOR counter := ofs TO ofs + padd - 1 DO
+			encryptionBlock[counter] := 0FFX
+		END
+		|       2 :	     REPEAT
+			CryptoUtils.RandomBytes(encryptionBlock^, ofs, padd);
+			nonzero := TRUE;
+			FOR counter := ofs TO ofs + padd - 1 DO
+				nonzero := nonzero & (encryptionBlock[counter] # 0X)
+			END
+		UNTIL nonzero
+		END;
+		INC(ofs, padd);
+		encryptionBlock[ofs] := 0X;
+		INC(ofs);
+		FOR counter := 0 TO srcLen - 1 DO
+			encryptionBlock[ofs + counter] := src[srcOfs + counter];
+			IF Trace THEN
+				AO.LogHex(ORD(src[srcOfs + counter]), (-2));
+				StdLog.String(' ')
+			END
+		END;
+		IF Trace THEN
+			StdLog.Ln;
+			StdLog.String("PKCS#1:");
+			StdLog.Ln;
+			AO.LogBuffer(encryptionBlock^, 0, k)
+		END;
+		AosBigNumbers.AssignBin(clear, encryptionBlock^, 0, k);
+		cipher := key.Encrypt(clear);
+		AosBigNumbers.GetBinaryValue(cipher, dest, destOfs);
+		destLen := k
+	END Encrypt;
+
+	PROCEDURE Decrypt* (IN src : ARRAY OF SHORTCHAR; srcOfs, srcLen : AO.SIZE; key : CryptoRSA.Key; blockType : AO.SIGNED32; VAR dest : ARRAY OF SHORTCHAR; destOfs : AO.SIZE; VAR destLen : AO.SIZE);
+		VAR
+			k, padd: AO.SIZE;
+			ofs, counter: AO.SIZE;
+			decryptedBlock: POINTER TO ARRAY OF SHORTCHAR;
+			clear, cipher: AosBigNumbers.BigNumber;
+
+
+	BEGIN
+		k := 4 * key.modulus.len;
+		IF srcLen # k THEN
+			destLen := 0;
+			RETURN
+		END;
+		IF src[srcOfs] # 0X THEN
+			destLen := 0;
+			RETURN
+		END;
+		AosBigNumbers.AssignBin(cipher, src, srcOfs, srcLen);
+		clear := key.Decrypt(cipher);
+		NEW(decryptedBlock, padd);
+		AosBigNumbers.GetBinaryValue(clear, decryptedBlock^, 0);
+		ofs := 0;
+		IF decryptedBlock[ofs] # 0X THEN
+			destLen := 0;
+			RETURN
+		END;
+		INC(ofs);
+		IF decryptedBlock[ofs] # CHR(blockType) THEN
+			destLen := 0;
+			RETURN
+		END;
+		INC(ofs);
+		CASE blockType OF
+			0 :	     REPEAT
+			INC(ofs)
+		UNTIL decryptedBlock[ofs] # 0X
+		|       1 :	     REPEAT
+			INC(ofs)
+		UNTIL decryptedBlock[ofs] # 0FFX;
+		IF decryptedBlock[ofs] # 0X THEN
+			destLen := 0;
+			RETURN
+		END;
+		INC(ofs)
+		|       2 :	     REPEAT
+			INC(ofs)
+		UNTIL decryptedBlock[ofs] = 0X;
+		INC(ofs)
+		END;
+		FOR counter := 0 TO k - ofs - 1 DO
+			dest[destOfs + counter] := decryptedBlock[ofs + counter]
+		END;
+		destLen := k - ofs - 1
+	END Decrypt;
+
+END CryptoPKCS1.

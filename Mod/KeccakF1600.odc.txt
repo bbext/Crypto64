@@ -1,0 +1,366 @@
+MODULE CryptoKeccakF1600;(** AUTHOR "GF"; PURPOSE "KeccakF-1600 sponge function"; *)
+(*
+	The Keccak sponge function, designed by Guido Bertoni, Joan Daemen,
+	Michaël Peeters and Gilles Van Assche. For more information, feedback or
+	questions, please refer to our website: http://keccak.noekeon.org/
+*)
+
+	IMPORT S := SYSTEM, AO := CryptoAosCompat, SYSTEM;
+
+	CONST
+		Width* = 1600;
+		LaneSize* = 8;
+
+	CONST
+		nrRounds = 24;
+		nrLanes = 25;
+
+	TYPE
+		Lane = RECORD
+			low, high : SET
+		END;
+		State = ARRAY nrLanes OF Lane;
+
+
+	VAR
+		roundConstants: ARRAY nrRounds OF Lane;
+		rhoOffsets: ARRAY nrLanes OF AO.SIGNED32;
+
+	TYPE
+		Instance* = POINTER TO EXTENSIBLE RECORD
+			state : State
+		END;
+
+	PROCEDURE (SELF: Instance) Initialize* , NEW;
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		FOR i := 0 TO nrLanes - 1 DO
+			SELF.state[i].low := {};
+			SELF.state[i].high := {}
+		END
+	END Initialize;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: Instance) Init* , NEW;
+
+	BEGIN
+		SELF.Initialize
+	END Init;
+
+
+	PROCEDURE ToBitInterleaving (IN in : Lane; VAR out : Lane);
+		VAR
+			temp, temp0, temp1: SET;
+
+
+	BEGIN
+		temp0 := in.low;
+		temp1 := in.high;
+		temp := (temp0 / S.LSH(temp0, (-1))) * BITS(22222222H);
+		temp0 := temp0 / temp / S.LSH(temp, 1);
+		temp := (temp0 / S.LSH(temp0, (-2))) * BITS(0C0C0C0CH);
+		temp0 := temp0 / temp / S.LSH(temp, 2);
+		temp := (temp0 / S.LSH(temp0, (-4))) * BITS(0F000F0H);
+		temp0 := temp0 / temp / S.LSH(temp, 4);
+		temp := (temp0 / S.LSH(temp0, (-8))) * BITS(0FF00H);
+		temp0 := temp0 / temp / S.LSH(temp, 8);
+		temp := (temp1 / S.LSH(temp1, (-1))) * BITS(22222222H);
+		temp1 := temp1 / temp / S.LSH(temp, 1);
+		temp := (temp1 / S.LSH(temp1, (-2))) * BITS(0C0C0C0CH);
+		temp1 := temp1 / temp / S.LSH(temp, 2);
+		temp := (temp1 / S.LSH(temp1, (-4))) * BITS(0F000F0H);
+		temp1 := temp1 / temp / S.LSH(temp, 4);
+		temp := (temp1 / S.LSH(temp1, (-8))) * BITS(0FF00H);
+		temp1 := temp1 / temp / S.LSH(temp, 8);
+		out.low := (temp0 * BITS(0FFFFH)) + S.LSH(temp1, 16);
+		out.high := S.LSH(temp0, (-16)) + (temp1 * BITS(0FFFF0000H))
+	END ToBitInterleaving;
+
+	PROCEDURE (SELF: Instance) XORBytesInLane* (laneNo, laneOffset, length : AO.SIZE; IN data : ARRAY OF SHORTCHAR; dataOffset : AO.SIZE), NEW;
+		VAR
+			lane: Lane;
+
+
+	BEGIN
+		ASSERT((laneNo < nrLanes) & (laneOffset < LaneSize) & (laneOffset + length <= LaneSize));
+		lane.low := {};
+		lane.high := {};
+		S.MOVE(S.ADR(data[dataOffset]), S.ADR(lane) + laneOffset, length);
+		ToBitInterleaving(lane, lane);
+		SELF.state[laneNo].low := SELF.state[laneNo].low / lane.low;
+		SELF.state[laneNo].high := SELF.state[laneNo].high / lane.high
+	END XORBytesInLane;
+
+	PROCEDURE (SELF: Instance) XORLanes* (IN data : ARRAY OF SHORTCHAR; offset, laneCount : AO.SIZE), NEW;
+		VAR
+			lane: Lane;
+			laneNo: AO.SIZE;
+
+
+	BEGIN
+		ASSERT(laneCount <= nrLanes);
+		FOR laneNo := 0 TO laneCount - 1 DO
+			S.MOVE(S.ADR(data[offset + laneNo * LaneSize]), S.ADR(lane), LaneSize);
+			ToBitInterleaving(lane, lane);
+			SELF.state[laneNo].low := SELF.state[laneNo].low / lane.low;
+			SELF.state[laneNo].high := SELF.state[laneNo].high / lane.high
+		END
+	END XORLanes;
+
+	PROCEDURE (SELF: Instance) ComplementBit* (position : AO.SIZE), NEW;
+		VAR
+			laneNo, bit: AO.SIZE;
+
+
+	BEGIN
+		ASSERT(position < 1600);
+		laneNo := position DIV 64;
+		bit := position MOD 64;
+		IF bit < 32 THEN
+			SELF.state[laneNo].low := (SELF.state[laneNo].low / {bit})
+		ELSE
+			SELF.state[laneNo].high := (SELF.state[laneNo].high / {bit - 32})
+		END
+	END ComplementBit;
+
+	PROCEDURE FromBitInterleaving (IN in : Lane; VAR out : Lane);
+		VAR
+			temp, temp0, temp1: SET;
+
+
+	BEGIN
+		temp0 := in.low;
+		temp1 := in.high;
+		temp := (temp0 * BITS(0FFFFH)) + SYSTEM.LSH(temp1, 16);
+		temp1 := SYSTEM.LSH(temp0, (-16)) + (temp1 * BITS(0FFFF0000H));
+		temp0 := temp;
+		temp := (temp0 / SYSTEM.LSH(temp0, (-8))) * BITS(0FF00H);
+		temp0 := temp0 / temp / SYSTEM.LSH(temp, 8);
+		temp := (temp0 / SYSTEM.LSH(temp0, (-4))) * BITS(0F000F0H);
+		temp0 := temp0 / temp / SYSTEM.LSH(temp, 4);
+		temp := (temp0 / SYSTEM.LSH(temp0, (-2))) * BITS(0C0C0C0CH);
+		temp0 := temp0 / temp / SYSTEM.LSH(temp, 2);
+		temp := (temp0 / SYSTEM.LSH(temp0, (-1))) * BITS(22222222H);
+		temp0 := temp0 / temp / SYSTEM.LSH(temp, 1);
+		temp := (temp1 / SYSTEM.LSH(temp1, (-8))) * BITS(0FF00H);
+		temp1 := temp1 / temp / SYSTEM.LSH(temp, 8);
+		temp := (temp1 / SYSTEM.LSH(temp1, (-4))) * BITS(0F000F0H);
+		temp1 := temp1 / temp / SYSTEM.LSH(temp, 4);
+		temp := (temp1 / SYSTEM.LSH(temp1, (-2))) * BITS(0C0C0C0CH);
+		temp1 := temp1 / temp / SYSTEM.LSH(temp, 2);
+		temp := (temp1 / SYSTEM.LSH(temp1, (-1))) * BITS(22222222H);
+		temp1 := temp1 / temp / SYSTEM.LSH(temp, 1);
+		out.low := temp0;
+		out.high := temp1
+	END FromBitInterleaving;
+
+	PROCEDURE (SELF: Instance) ExtractBytesInLane* (laneNo, laneOffset, length : AO.SIZE; VAR data : ARRAY OF SHORTCHAR; dataOffset : AO.SIZE), NEW;
+		VAR
+			lane: Lane;
+
+
+	BEGIN
+		ASSERT((laneNo < nrLanes) & (laneOffset < LaneSize) & (laneOffset + length <= LaneSize));
+		FromBitInterleaving(SELF.state[laneNo], lane);
+		S.MOVE(S.ADR(lane) + laneOffset, S.ADR(data[dataOffset]), length)
+	END ExtractBytesInLane;
+
+	PROCEDURE (SELF: Instance) ExtractLanes* (VAR data : ARRAY OF SHORTCHAR; offset, laneCount : AO.SIZE), NEW;
+		VAR
+			lane: Lane;
+			laneNo: AO.SIZE;
+
+
+	BEGIN
+		ASSERT(laneCount <= nrLanes);
+		FOR laneNo := 0 TO laneCount - 1 DO
+			FromBitInterleaving(SELF.state[laneNo], lane);
+			S.MOVE(S.ADR(lane), S.ADR(data[offset + laneNo * LaneSize]), LaneSize)
+		END
+	END ExtractLanes;
+
+	PROCEDURE ROL64_1XOR (IN in1, in2 : Lane; VAR out : Lane);
+
+	BEGIN
+		out.low := SYSTEM.ROT(in1.high, 1) / in2.low;
+		out.high := in1.low / in2.high
+	END ROL64_1XOR;
+
+
+
+	PROCEDURE ROL64 (VAR lane : Lane; offset : AO.SIZE);
+		VAR
+			tmp: SET;
+
+
+	BEGIN
+		IF ODD(offset) THEN
+			tmp := lane.low;
+			lane.low := SYSTEM.ROT(lane.high, (offset + 1) DIV 2);
+			lane.high := SYSTEM.ROT(tmp, (offset - 1) DIV 2)
+		ELSE
+			lane.low := SYSTEM.ROT(lane.low, offset DIV 2);
+			lane.high := SYSTEM.ROT(lane.high, offset DIV 2)
+		END
+	END ROL64;
+
+
+	PROCEDURE Round (VAR a : State; r : AO.SIZE);
+		VAR
+			x, y, i, i1, i2: AO.SIGNED32;
+			c, d: ARRAY 5 OF Lane;
+			a0: State;
+
+
+	BEGIN
+		FOR x := 0 TO 4 DO
+			c[x].low := {};
+			c[x].high := {};
+			FOR y := 0 TO 20 BY 5 DO
+				c[x].low := c[x].low / a[x + y].low;
+				c[x].high := c[x].high / a[x + y].high
+			END
+		END;
+		FOR x := 0 TO 4 DO
+			ROL64_1XOR(c[(x + 1) MOD 5], c[(x + 4) MOD 5], d[x])
+		END;
+		FOR x := 0 TO 4 DO
+			FOR y := 0 TO 4 DO
+				i := x + 5 * y;
+				a[i].low := a[i].low / d[x].low;
+				a[i].high := a[i].high / d[x].high
+			END
+		END;
+		FOR i := 0 TO 24 DO
+			ROL64(a[i], rhoOffsets[i])
+		END;
+		a0 := a;
+		FOR x := 0 TO 4 DO
+			FOR y := 0 TO 4 DO
+				a[y + 5 * ((2 * x + 3 * y) MOD 5)] := a0[x + 5 * y]
+			END
+		END;
+		FOR y := 0 TO 20 BY 5 DO
+			FOR x := 0 TO 2 DO
+				i := x + y;
+				i1 := x + 1 + y;
+				i2 := x + 2 + y;
+				c[x].low := a[i].low / (((-a[i1].low)) * a[i2].low);
+				c[x].high := a[i].high / (((-a[i1].high)) * a[i2].high)
+			END;
+			i := 3 + y;
+			i1 := 4 + y;
+			i2 := 0 + y;
+			c[3].low := a[i].low / (((-a[i1].low)) * a[i2].low);
+			c[3].high := a[i].high / (((-a[i1].high)) * a[i2].high);
+			i := 4 + y;
+			i1 := 0 + y;
+			i2 := 1 + y;
+			c[4].low := a[i].low / (((-a[i1].low)) * a[i2].low);
+			c[4].high := a[i].high / (((-a[i1].high)) * a[i2].high);
+			FOR x := 0 TO 4 DO
+				a[x + y].low := c[x].low;
+				a[x + y].high := c[x].high
+			END
+		END;
+		a[0].low := a[0].low / roundConstants[r].low;
+		a[0].high := a[0].high / roundConstants[r].high
+	END Round;
+	PROCEDURE (SELF: Instance) Permute* , NEW;
+		VAR
+			r: AO.SIZE;
+
+
+	BEGIN
+		FOR r := 0 TO nrRounds - 1 DO
+			Round(SELF.state, r)
+		END
+	END Permute;
+
+	PROCEDURE (SELF: Instance) XORPermute* (IN inData : ARRAY OF SHORTCHAR; offset, count : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.XORLanes(inData, offset, count);
+		SELF.Permute
+	END XORPermute;
+
+
+	PROCEDURE (SELF: Instance) XORPermuteExtract* (IN inData : ARRAY OF SHORTCHAR; inOffset, inLaneCount : AO.SIZE; VAR outData : ARRAY OF SHORTCHAR; outOffset, outLaneCount : AO.SIZE), NEW;
+
+	BEGIN
+		SELF.XORLanes(inData, inOffset, inLaneCount);
+		SELF.Permute;
+		SELF.ExtractLanes(outData, outOffset, outLaneCount)
+	END XORPermuteExtract;
+
+
+
+
+	PROCEDURE LFSR86540 (VAR LFSR : SET): BOOLEAN;
+		VAR
+			result: BOOLEAN;
+
+
+	BEGIN
+		result := 0 IN LFSR;
+		IF 7 IN LFSR THEN
+			LFSR := SYSTEM.LSH(LFSR, 1) / BITS(71H)
+		ELSE
+			LFSR := SYSTEM.LSH(LFSR, 1)
+		END;
+		RETURN result
+	END LFSR86540;
+
+
+
+	PROCEDURE InitializeRoundConstants ;
+		VAR
+			LFSRstate: SET;
+			i, j, bit: AO.SIGNED32;
+			lane: Lane;
+
+
+	BEGIN
+		LFSRstate := {0};
+		FOR i := 0 TO nrRounds - 1 DO
+			lane.low := {};
+			lane.high := {};
+			FOR j := 0 TO 6 DO
+				bit := ASH(1, j) - 1;
+				IF LFSR86540(LFSRstate) THEN
+					IF bit < 32 THEN
+						INCL(lane.low, bit)
+					ELSE
+						INCL(lane.high, bit - 32)
+					END
+				END
+			END;
+			ToBitInterleaving(lane, roundConstants[i])
+		END
+	END InitializeRoundConstants;
+
+	PROCEDURE InitializeRhoOffsets ;
+		VAR
+			x, y, oldY: AO.SIZE;
+			t: AO.SIGNED32;
+
+
+	BEGIN
+		rhoOffsets[0] := 0;
+		x := 1;
+		y := 0;
+		FOR t := 0 TO 23 DO
+			rhoOffsets[x + 5 * y] := ((t + 1) * (t + 2) DIV 2) MOD 64;
+			oldY := y;
+			y := (2 * x + 3 * y) MOD 5;
+			x := oldY
+		END
+	END InitializeRhoOffsets;
+
+BEGIN
+	InitializeRoundConstants;
+	InitializeRhoOffsets
+END CryptoKeccakF1600.

@@ -1,0 +1,83 @@
+MODULE CryptoAosClock;
+
+(**
+	AUTHOR: Alexey Morozov, HighDim GmbH, 2018
+	PURPOSE: A2 clock with a plugable RTC get/set interface
+	Aos, Copyright 2001, Pieter Muller, ETH Zurich
+**)
+
+	IMPORT AO := CryptoAosCompat, Dates;
+
+	TYPE
+		GetRtcTimeFunc = PROCEDURE(VAR second, minute, hour, day, month : AO.SIGNED8; VAR year : AO.SIGNED16): BOOLEAN;
+		SetRtcTimeFunc = PROCEDURE(second, minute, hour, day, month : AO.SIGNED8; year : AO.SIGNED16): BOOLEAN;
+
+	VAR
+		getRtcTime: GetRtcTimeFunc;
+		setRtcTime: SetRtcTimeFunc;
+		tz: AO.SIGNED32;
+		starttime, startdate: AO.SIGNED32;
+
+	PROCEDURE Get* (VAR time, date : AO.SIGNED32);
+		VAR
+			second, minute, hour, day, month: AO.SIGNED8;
+			year: AO.SIGNED16;
+	BEGIN
+		IF getRtcTime # NIL THEN
+			IF getRtcTime(second, minute, hour, day, month, year) THEN
+				time := (hour) * 4096 + (minute) * 64 + second;
+				date := (year) * 512 + (month) * 32 + day;
+				RETURN
+			END
+		END;
+		time := 0;
+		date := 0
+	END Get;
+
+	PROCEDURE Set* (time, date : AO.SIGNED32);
+		VAR
+			second, minute, hour, day, month: AO.SIGNED8;
+			year: AO.SIGNED16;
+	BEGIN
+		IF setRtcTime # NIL THEN
+			second := SHORT(SHORT(time MOD 64));
+			minute := SHORT(SHORT(time DIV 64 MOD 64));
+			hour := SHORT(SHORT(time DIV 4096 MOD 32));
+			day := SHORT(SHORT(date MOD 32));
+			month := SHORT(SHORT(date DIV 32 MOD 16));
+			year := SHORT(date DIV 512);
+			IF setRtcTime(second, minute, hour, day, month, year) THEN
+			
+			END
+		END
+	END Set;
+
+	PROCEDURE Install* (get : GetRtcTimeFunc; set : SetRtcTimeFunc);
+	BEGIN
+		getRtcTime :=  get;
+		setRtcTime :=  set; 
+		Get(starttime, startdate)
+	END Install;
+
+	PROCEDURE DefaultGetRtcTimeFunc(VAR second, minute, hour, day, month : AO.SIGNED8; VAR year : AO.SIGNED16): BOOLEAN;
+		VAR d : Dates.Date; t : Dates.Time;
+	BEGIN
+		Dates.GetUTCDateTime(d, t);
+		second := SHORT(SHORT(t.second));
+		minute := SHORT(SHORT(t.minute));
+		hour := SHORT(SHORT(t.hour));
+		day := SHORT(SHORT(d.day));
+		month := SHORT(SHORT(d.month));
+		year := SHORT(d.year -1900);
+		RETURN TRUE;
+	END DefaultGetRtcTimeFunc;
+	
+	PROCEDURE DefaultSetRtcTimeFunc (second, minute, hour, day, month : AO.SIGNED8; year : AO.SIGNED16): BOOLEAN;
+	BEGIN
+		RETURN FALSE;
+	END DefaultSetRtcTimeFunc;
+
+BEGIN
+	tz := 2 * 60;
+	Install(DefaultGetRtcTimeFunc, DefaultSetRtcTimeFunc)
+END CryptoAosClock.

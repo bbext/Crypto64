@@ -1,0 +1,776 @@
+MODULE CryptoAosCompat;
+
+(**
+	AUTHOR: Shelin Anton, 2023
+	PURPOSE: Helper utils for aos port, unsigned numbers support
+*)
+
+	IMPORT SYSTEM, StdLog;
+
+TYPE
+		SIZE* = INTEGER;
+		ADDRESS* = LONGINT;
+		UNSIGNED8* = BYTE;
+		UNSIGNED16* = SHORTINT;
+		UNSIGNED32* = INTEGER;
+		UNSIGNED64* = LONGINT;
+		SIGNED8* = BYTE;	
+		SIGNED16* = SHORTINT;
+		SIGNED32* = INTEGER;
+		SIGNED64* = LONGINT;
+		FLOAT32* = SHORTREAL;
+		FLOAT64* = REAL;
+		SET8* = SET;
+		SET16* = SET;
+		SET32* = SET;
+		SET64* = RECORD 
+			low,high : SET
+		END;
+		SHORTINT_PARTS = ARRAY 2 OF BYTE;
+		INTEGER_PARTS = ARRAY 2 OF SHORTINT;
+		LONGINT_PARTS = ARRAY 2 OF INTEGER;
+		
+	CONST high_part = 1; low_part = 0;
+
+	PROCEDURE LogHex*(i, b: INTEGER);
+	BEGIN
+		StdLog.IntForm(i, StdLog.hexadecimal, -b, '0', FALSE);
+	END LogHex;
+	
+	PROCEDURE LogBytes(arr : ARRAY OF SHORTCHAR);
+		VAR i : INTEGER;
+	BEGIN
+		FOR i := 0 TO LEN(arr)-1 DO
+			StdLog.Int(ORD(arr[i]));
+		END;
+
+	END LogBytes;
+	
+	PROCEDURE LogBuffer*(a: ARRAY OF SHORTCHAR; s,l:INTEGER);
+		VAR i : INTEGER; arr : POINTER TO ARRAY OF CHAR;
+	BEGIN
+		NEW(arr, l+1);
+		FOR i := 0 TO l-1 DO
+			IF (ORD(a[s+i]) >= 32) & (ORD(a[s+i]) < 127) THEN
+				arr[i] := a[s+i]
+			ELSE
+				arr[i] := '_';
+			END;
+		END;
+		arr[i] := 0X;
+		StdLog.String(arr$);
+	END LogBuffer;
+	
+	PROCEDURE TOUNSIGNED8*(x:BYTE): UNSIGNED8;
+	BEGIN
+		RETURN x;
+	END TOUNSIGNED8;
+	
+	PROCEDURE TOSIGNED8*(x:UNSIGNED8): SIGNED8;
+	BEGIN
+		RETURN x;
+	END TOSIGNED8;
+	
+	PROCEDURE TOUNSIGNED16*(x:SHORTINT): UNSIGNED16;
+	BEGIN
+		RETURN x;
+	END TOUNSIGNED16;
+	
+	PROCEDURE TOSIGNED16*(x:UNSIGNED16): SIGNED16;
+	BEGIN
+		RETURN x;
+	END TOSIGNED16;
+		
+	PROCEDURE TOUNSIGNED32*(x:INTEGER): UNSIGNED32;
+	BEGIN
+		RETURN x;
+	END TOUNSIGNED32;
+	
+	PROCEDURE MAX_UNSIGNED32*():UNSIGNED32;
+	BEGIN
+		RETURN TOUNSIGNED32(-1);
+	END MAX_UNSIGNED32;
+	
+	PROCEDURE MIN_UNSIGNED32*():UNSIGNED32;
+	BEGIN
+		RETURN TOUNSIGNED32(0);
+	END MIN_UNSIGNED32;
+	
+	PROCEDURE TOSIGNED32*(x:UNSIGNED32): SIGNED32;
+	BEGIN
+		RETURN x;
+	END TOSIGNED32;
+	
+	PROCEDURE SHORT16Raw(x:SIGNED16): SIGNED8;
+	BEGIN
+		RETURN SHORT(SHORT(x MOD 100H));
+	END SHORT16Raw;
+	
+	PROCEDURE SHORT16*(x:UNSIGNED16): UNSIGNED8;
+	BEGIN
+		RETURN SHORT16Raw(x);
+	END SHORT16;
+	
+	PROCEDURE SHORT32Raw(x:SIGNED32): SIGNED16;
+	BEGIN
+		RETURN SHORT(x MOD 10000H);
+	END SHORT32Raw;
+	
+	PROCEDURE SHORT32*(x:UNSIGNED32): UNSIGNED16;
+	BEGIN
+		RETURN SHORT32Raw(x);
+	END SHORT32;
+	
+	PROCEDURE TOUNSIGNED64*(x:LONGINT): UNSIGNED64;
+	BEGIN
+		RETURN x;
+	END TOUNSIGNED64;
+	
+	PROCEDURE TOSIGNED64*(x:UNSIGNED64): SIGNED64;
+	BEGIN
+		RETURN x;
+	END TOSIGNED64;
+		
+	PROCEDURE MAX_UNSIGNED64*():UNSIGNED64;
+	BEGIN
+		RETURN TOUNSIGNED64(LONG(-1));
+	END MAX_UNSIGNED64;
+	
+	PROCEDURE MIN_UNSIGNED64*():UNSIGNED64;
+	BEGIN
+		RETURN TOUNSIGNED64(LONG(0));
+	END MIN_UNSIGNED64;
+		
+	PROCEDURE COPY*(a:ARRAY OF SHORTCHAR; OUT b:ARRAY OF SHORTCHAR);
+	BEGIN
+		b := a$;
+	END COPY;
+
+	(* 64-bit port: all x86-32 [code] procedures rewritten in pure CP *)
+
+	PROCEDURE ZE8 (x: SIGNED8): INTEGER;	(* zero-extend *)
+	BEGIN
+		IF x < 0 THEN RETURN x + 256 ELSE RETURN x END
+	END ZE8;
+
+	PROCEDURE ZE16 (x: SIGNED16): INTEGER;
+	BEGIN
+		IF x < 0 THEN RETURN x + 65536 ELSE RETURN x END
+	END ZE16;
+
+	PROCEDURE ZE32 (x: SIGNED32): SIGNED64;
+		VAR p: LONGINT_PARTS;
+	BEGIN
+		p[high_part] := 0; p[low_part] := x;
+		RETURN SYSTEM.VAL(SIGNED64, p)
+	END ZE32;
+
+	PROCEDURE LOW32 (x: SIGNED64): SIGNED32;
+		VAR p: LONGINT_PARTS;
+	BEGIN
+		p := SYSTEM.VAL(LONGINT_PARTS, x);
+		RETURN p[low_part]
+	END LOW32;
+
+	PROCEDURE UDivInline8 (x, y: SIGNED8): SIGNED8;
+	BEGIN
+		RETURN SHORT(SHORT(ZE8(x) DIV ZE8(y)))
+	END UDivInline8;
+	
+	PROCEDURE UDiv8* (x, y: UNSIGNED8): UNSIGNED8;
+	BEGIN
+		RETURN UDivInline8(x,y);
+	END UDiv8;
+	
+	PROCEDURE UMod8Raw (x, y: SIGNED8): SIGNED8;
+	BEGIN
+		RETURN SHORT(SHORT(ZE8(x) MOD ZE8(y)))
+	END UMod8Raw;
+
+	PROCEDURE UMod8* (x, y: UNSIGNED8): UNSIGNED8;
+	BEGIN
+		RETURN UMod8Raw(x,y);
+	END UMod8;
+	
+	PROCEDURE UDiv16Raw (x, y: SIGNED16): SIGNED16;
+	BEGIN
+		RETURN SHORT(ZE16(x) DIV ZE16(y))
+	END UDiv16Raw;
+	
+	PROCEDURE UDiv16* (x, y: UNSIGNED16): UNSIGNED16;
+	BEGIN
+		RETURN UDiv16Raw(x, y);
+	END UDiv16;
+	
+	PROCEDURE UMod16Raw (x, y: SIGNED16): SIGNED16;
+	BEGIN
+		RETURN SHORT(ZE16(x) MOD ZE16(y))
+	END UMod16Raw;
+
+	PROCEDURE UMod16* (x, y: UNSIGNED16): UNSIGNED16;
+	BEGIN
+		RETURN UMod16Raw(x,y);
+		
+	END UMod16;
+	
+	PROCEDURE UDivI32Raw (x, y: SIGNED32): SIGNED32;
+	BEGIN
+		RETURN LOW32(ZE32(x) DIV ZE32(y))
+	END UDivI32Raw;
+
+	PROCEDURE UDiv32* (x, y: UNSIGNED32): UNSIGNED32;
+		VAR r: UNSIGNED32;
+	BEGIN
+		RETURN UDivI32Raw(x, y);
+	END UDiv32;
+
+	PROCEDURE UMod32Raw (x, y: SIGNED32): SIGNED32;
+	BEGIN
+		RETURN LOW32(ZE32(x) MOD ZE32(y))
+	END UMod32Raw;
+		
+	PROCEDURE Bsr32Inline (x: SIGNED32): INTEGER;	(* index of highest set bit, x # 0 *)
+		VAR n: INTEGER;
+	BEGIN
+		n := 0;
+		WHILE SYSTEM.LSH(x, -1) # 0 DO x := SYSTEM.LSH(x, -1); INC(n) END;
+		RETURN n
+	END Bsr32Inline;
+		
+	PROCEDURE Clz32(x: SIGNED32): INTEGER;
+	BEGIN
+		IF x = 0 THEN RETURN 32 ELSE RETURN 31 - Bsr32Inline(x) END
+	END Clz32;
+
+	PROCEDURE UMod32* (x, y: UNSIGNED32): UNSIGNED32;
+	BEGIN
+		RETURN UMod32Raw(x, y);
+	END UMod32;
+	
+	PROCEDURE ULssRaw (x, y: SIGNED32): BOOLEAN;	(* unsigned <: flip sign bits *)
+	BEGIN
+		RETURN ORD(BITS(x) / {31}) < ORD(BITS(y) / {31})
+	END ULssRaw;
+		
+	PROCEDURE ULss8* (x, y: UNSIGNED8): BOOLEAN;
+	BEGIN
+		RETURN ULssRaw(x,y);
+	END ULss8;
+	
+	PROCEDURE ULss16* (x, y: UNSIGNED16): BOOLEAN;
+	BEGIN
+		RETURN ULssRaw(x,y);
+	END ULss16;
+	
+	PROCEDURE ULss32* (x, y: UNSIGNED32): BOOLEAN;
+	BEGIN
+		RETURN ULssRaw(x,y);
+	END ULss32;
+	
+	PROCEDURE ULeq8* (x, y: UNSIGNED8): BOOLEAN;
+	BEGIN
+		RETURN (x = y) OR ULssRaw(x,y);
+	END ULeq8;
+
+	PROCEDURE ULeq16* (x, y: UNSIGNED16): BOOLEAN;
+	BEGIN
+		RETURN (x = y) OR ULssRaw(x,y);
+	END ULeq16;
+
+	PROCEDURE ULeq32* (x, y: UNSIGNED32): BOOLEAN;
+	BEGIN
+		RETURN (x = y) OR ULssRaw(x,y);
+	END ULeq32;
+	
+	PROCEDURE UGtrRaw (x, y: SIGNED32): BOOLEAN;
+	BEGIN
+		RETURN ORD(BITS(y) / {31}) < ORD(BITS(x) / {31})
+	END UGtrRaw;
+		
+	PROCEDURE UGeq8* (x, y: UNSIGNED8): BOOLEAN;
+	BEGIN
+		RETURN (x = y) OR UGtrRaw(x,y);
+	END UGeq8;
+		
+	PROCEDURE UGeq16* (x, y: UNSIGNED16): BOOLEAN;
+	BEGIN
+		RETURN (x = y) OR UGtrRaw(x,y);
+	END UGeq16;
+	
+	PROCEDURE UGeq32* (x, y: UNSIGNED32): BOOLEAN;
+	BEGIN
+		RETURN (x = y) OR UGtrRaw(x,y);
+	END UGeq32;
+	
+	PROCEDURE UEq8* (x, y: UNSIGNED8): BOOLEAN;
+	BEGIN
+		RETURN (x = y);
+	END UEq8;
+
+	PROCEDURE UEq16* (x, y: UNSIGNED16): BOOLEAN;
+	BEGIN
+		RETURN (x = y);
+	END UEq16;
+	
+	PROCEDURE UEq32* (x, y: UNSIGNED32): BOOLEAN;
+	BEGIN
+		RETURN (x = y);
+	END UEq32;
+	
+	PROCEDURE UEq64* (x, y: UNSIGNED64): BOOLEAN;
+	BEGIN
+		RETURN (x = y);
+	END UEq64;
+
+	PROCEDURE UNeq8* (x, y: UNSIGNED8): BOOLEAN;
+	BEGIN
+		RETURN (x # y);
+	END UNeq8;
+	
+	PROCEDURE UNeq16* (x, y: UNSIGNED16): BOOLEAN;
+	BEGIN
+		RETURN (x # y);
+	END UNeq16;
+	
+	PROCEDURE UNeq32* (x, y: UNSIGNED32): BOOLEAN;
+	BEGIN
+		RETURN (x # y);
+	END UNeq32;
+	
+	PROCEDURE UNeq64* (x, y: UNSIGNED64): BOOLEAN;
+	BEGIN
+		RETURN (x # y);
+	END UNeq64;
+	
+	PROCEDURE ULSH32* (x: UNSIGNED32; n : INTEGER): UNSIGNED32;
+	BEGIN
+		RETURN SYSTEM.LSH(x,n);
+	END ULSH32;
+	
+	PROCEDURE UASH32* (x: UNSIGNED32; n : INTEGER): UNSIGNED32;
+	BEGIN
+		RETURN SYSTEM.LSH(x,n);
+	END UASH32;
+	
+	PROCEDURE CDQRaw (low, high: SIGNED32): SIGNED64;
+		VAR p: LONGINT_PARTS;
+	BEGIN
+		p[low_part] := low; p[high_part] := high;
+		RETURN SYSTEM.VAL(SIGNED64, p)
+	END CDQRaw;
+		
+	PROCEDURE CDQ* (x, y: UNSIGNED32): UNSIGNED64;
+	BEGIN
+		RETURN CDQRaw(x,y);
+	END CDQ;
+
+	PROCEDURE UAdd64Raw (x, y: SIGNED64): SIGNED64;	(* add+adc via halves, no signed overflow *)
+		VAR px, py, pr: LONGINT_PARTS; lo, hi: SIGNED64;
+	BEGIN
+		px := SYSTEM.VAL(LONGINT_PARTS, x); py := SYSTEM.VAL(LONGINT_PARTS, y);
+		lo := ZE32(px[low_part]) + ZE32(py[low_part]);	(* 0..2^33-2 *)
+		hi := ZE32(px[high_part]) + ZE32(py[high_part]) + SYSTEM.LSH(lo, -32);
+		pr[low_part] := LOW32(lo); pr[high_part] := LOW32(hi);
+		RETURN SYSTEM.VAL(SIGNED64, pr)
+	END UAdd64Raw;
+
+	PROCEDURE UAdd64* (x, y: UNSIGNED64): UNSIGNED64;
+	BEGIN
+		RETURN UAdd64Raw(x,y);
+	END UAdd64;
+		
+	PROCEDURE USubInline64 (x, y: SIGNED64): SIGNED64;	(* sub+sbb via halves *)
+		VAR px, py, pr: LONGINT_PARTS; lo, hi: SIGNED64;
+	BEGIN
+		px := SYSTEM.VAL(LONGINT_PARTS, x); py := SYSTEM.VAL(LONGINT_PARTS, y);
+		lo := ZE32(px[low_part]) - ZE32(py[low_part]);
+		IF lo < 0 THEN lo := lo + 4294967296; hi := -1 ELSE hi := 0 END;
+		hi := hi + ZE32(px[high_part]) - ZE32(py[high_part]);
+		pr[low_part] := LOW32(lo); pr[high_part] := LOW32(hi);
+		RETURN SYSTEM.VAL(SIGNED64, pr)
+	END USubInline64;
+	
+	PROCEDURE USub64* (x, y: UNSIGNED64): UNSIGNED64;
+	BEGIN
+		 RETURN USubInline64(x,y);
+	END USub64;
+	
+	PROCEDURE UGetHighBits64 (x: SIGNED64): SIGNED32;
+		VAR p: LONGINT_PARTS;
+	BEGIN
+		p := SYSTEM.VAL(LONGINT_PARTS, x);
+		RETURN p[high_part]
+	END UGetHighBits64;
+	
+	PROCEDURE ULSH64Raw (x: SIGNED64; n : INTEGER): SIGNED64;
+	BEGIN
+		RETURN SYSTEM.LSH(x, n)	(* amd64: native logical Int64 shift *)
+	END ULSH64Raw;
+	
+	PROCEDURE ULSH64* (x: UNSIGNED64; n : INTEGER): UNSIGNED64;
+	BEGIN
+		RETURN ULSH64Raw(x,n);
+	END ULSH64;
+	
+	PROCEDURE ULss64Raw (x, y: SIGNED64): BOOLEAN;
+			VAR p,p2 : SIGNED32;
+	BEGIN
+		p := UGetHighBits64(x);
+		p2 := UGetHighBits64(y);
+		IF p = p2 THEN
+			p := SYSTEM.VAL(INTEGER, x);
+			p2 := SYSTEM.VAL(INTEGER, y);
+		END;
+		RETURN ULssRaw(p, p2);
+	END ULss64Raw;
+	
+	PROCEDURE ULss64* (x, y: UNSIGNED64): BOOLEAN;
+			VAR p,p2 : SIGNED32;
+	BEGIN
+		p := UGetHighBits64(x);
+		p2 := UGetHighBits64(y);
+		IF p = p2 THEN
+			p := SYSTEM.VAL(INTEGER, x);
+			p2 := SYSTEM.VAL(INTEGER, y);
+		END;
+		RETURN ULss64Raw(x, y);
+	END ULss64;
+	
+	PROCEDURE ULeq64* (x, y: UNSIGNED64): BOOLEAN;
+	BEGIN
+		RETURN (x = y) OR ULss64(x,y);
+	END ULeq64;
+	
+	PROCEDURE UGtr64Raw (x, y: SIGNED64): BOOLEAN;
+			VAR p,p2 : SIGNED32;
+	BEGIN
+		p := UGetHighBits64(x);
+		p2 := UGetHighBits64(y);
+		IF p = p2 THEN
+			p := SYSTEM.VAL(INTEGER, x);
+			p2 := SYSTEM.VAL(INTEGER, y);
+		END;
+		RETURN UGtrRaw(p, p2);
+	END UGtr64Raw;
+	
+	PROCEDURE UGtr8* (x, y: UNSIGNED8): BOOLEAN;
+	BEGIN
+		RETURN UGtrRaw(x, y);
+	END UGtr8;
+	
+	PROCEDURE UGtr16* (x, y: UNSIGNED16): BOOLEAN;
+	BEGIN
+		RETURN UGtrRaw(x, y);
+	END UGtr16;
+	
+	PROCEDURE UGtr32* (x, y: UNSIGNED32): BOOLEAN;
+	BEGIN
+		RETURN UGtrRaw(x, y);
+	END UGtr32;
+	
+	PROCEDURE UGtr64* (x, y: UNSIGNED64): BOOLEAN;
+	BEGIN
+		RETURN UGtr64Raw(x, y);
+	END UGtr64;
+	
+	PROCEDURE UGeq64Raw (x, y: SIGNED64): BOOLEAN;
+	BEGIN
+		RETURN (x = y) OR UGtr64Raw(x,y);
+	END UGeq64Raw;
+	
+	PROCEDURE UGeq64* (x, y: UNSIGNED64): BOOLEAN;
+	BEGIN
+		RETURN UGeq64Raw(x, y);
+	END UGeq64;
+			
+	(* Count leading zeros in a binary representation of a given 64-bit integer number *)
+	PROCEDURE Clz64(x: SIGNED64): INTEGER;
+		VAR p : SIGNED32;
+	BEGIN
+		p := UGetHighBits64(x);
+		IF p # 0 THEN
+			RETURN Clz32(p);
+		ELSE
+			p := SYSTEM.VAL(INTEGER, x);
+			RETURN 32 + Clz32(p);
+		END;
+		RETURN 0;
+	END Clz64;
+
+	(*
+		Fast 64-bit unsigned integer division/modulo (Alexey Morozov)
+	*)
+	PROCEDURE DivModU64(dividend, divisor: SIGNED64; VAR quotient, remainder: SIGNED64);
+	VAR m: INTEGER;
+	BEGIN 
+		quotient := 0;
+
+		IF dividend = 0 THEN remainder := 0; RETURN; END;
+		IF ULss64Raw(dividend, divisor) THEN remainder := dividend; RETURN; END;
+
+		m := Clz64(divisor) - Clz64(dividend);
+		ASSERT(m >= 0);
+
+		divisor := ULSH64Raw(divisor,m);
+		WHILE m >= 0 DO
+			quotient := ULSH64Raw(quotient,1);
+			IF UGeq64Raw(dividend,divisor) THEN
+				INC(quotient);
+				DEC(dividend,divisor);
+			END;
+			divisor := ULSH64Raw(divisor,-1);
+			DEC(m);
+		END;
+
+		remainder := dividend;
+	
+	END DivModU64;
+
+	PROCEDURE UDiv64* (x, y: UNSIGNED64): UNSIGNED64;
+		VAR quotient, remainder: UNSIGNED64;
+	BEGIN
+		DivModU64(x,y, quotient, remainder);
+		RETURN quotient;
+	END UDiv64;
+	
+	PROCEDURE UMod64* (x, y: UNSIGNED64): UNSIGNED64;
+		VAR quotient, remainder: UNSIGNED64;
+	BEGIN
+		DivModU64(x,y, quotient, remainder);
+		RETURN remainder;
+	END UMod64;
+	
+	PROCEDURE UMul64Raw(n,m: SIGNED64) : SIGNED64;
+		VAR res : SIGNED64;
+    BEGIN
+		res := 0;
+		WHILE m # 0 DO
+			IF 0 IN BITS(SYSTEM.VAL(INTEGER, m)) THEN
+				res := UAdd64Raw(res, n)
+			END;
+			n := ULSH64Raw(n, 1);
+			m := ULSH64Raw(m, -1)
+		END;
+		RETURN res;
+	END UMul64Raw;
+	
+	PROCEDURE UMul64*(n,m: UNSIGNED64) : UNSIGNED64;
+    BEGIN
+		RETURN UMul64Raw(n, m);
+	END UMul64;
+	
+	PROCEDURE UMul32Raw(n,m: SIGNED32) : SIGNED32;
+    BEGIN
+		RETURN n * m;
+	END UMul32Raw;
+	
+	PROCEDURE UMul32*(n,m: UNSIGNED32) : UNSIGNED32;
+    BEGIN
+		RETURN UMul32Raw(n, m);
+	END UMul32;
+	
+	PROCEDURE UMul16Raw(n,m: SIGNED16) : SIGNED16;
+    BEGIN
+		RETURN SHORT(n * m);
+	END UMul16Raw;
+	
+	PROCEDURE UMul16*(n,m: UNSIGNED16) : UNSIGNED16;
+    BEGIN
+		RETURN UMul16Raw(n, m);
+	END UMul16;
+	
+	PROCEDURE UMul8Raw(n,m: SIGNED8) : SIGNED8;
+    BEGIN
+		RETURN SHORT16Raw(SHORT32Raw(n * m));
+	END UMul8Raw;
+	
+	PROCEDURE UMul8*(n,m: UNSIGNED8) : UNSIGNED8;
+    BEGIN
+		RETURN UMul8Raw(n, m);
+	END UMul8;
+	
+	PROCEDURE UAdd32Raw(n,m: SIGNED32) : SIGNED32;
+    BEGIN
+		RETURN n + m;
+	END UAdd32Raw;
+	
+	PROCEDURE UAdd32*(n,m: UNSIGNED32) : UNSIGNED32;
+    BEGIN
+		RETURN UAdd32Raw(n, m);
+	END UAdd32;
+	
+	PROCEDURE UAdd16Raw(n,m: SIGNED16) : SIGNED16;
+    BEGIN
+		RETURN SHORT32Raw(n + m);
+	END UAdd16Raw;
+	
+	PROCEDURE UAdd16*(n,m: UNSIGNED16) : UNSIGNED16;
+    BEGIN
+		RETURN UAdd16Raw(n, m);
+	END UAdd16;
+	
+	PROCEDURE UAdd8Raw(n,m: SIGNED8) : SIGNED8;
+    BEGIN
+		RETURN SHORT16Raw(SHORT32Raw(n + m));
+	END UAdd8Raw;
+	
+	PROCEDURE UAdd8*(n,m: UNSIGNED8) : UNSIGNED8;
+    BEGIN
+		RETURN UAdd8Raw(n, m);
+	END UAdd8;
+	
+	PROCEDURE USub32Raw(n,m: SIGNED32) : SIGNED32;
+    BEGIN
+		RETURN n - m;
+	END USub32Raw;
+	
+	PROCEDURE USub32*(n,m: UNSIGNED32) : UNSIGNED32;
+    BEGIN
+		RETURN USub32Raw(n, m);
+	END USub32;
+	
+	PROCEDURE USub16Raw(n,m: SIGNED16) : SIGNED16;
+    BEGIN
+		RETURN SHORT32Raw(n - m);
+	END USub16Raw;
+	
+	PROCEDURE USub16*(n,m: UNSIGNED16) : UNSIGNED16;
+    BEGIN
+		RETURN USub16Raw(n, m);
+	END USub16;
+	
+	PROCEDURE USub8Raw(n,m: SIGNED8) : SIGNED8;
+    BEGIN
+		RETURN SHORT16Raw(SHORT32Raw(n - m));
+	END USub8Raw;
+	
+	PROCEDURE USub8*(n,m: UNSIGNED8) : UNSIGNED8;
+		VAR res : UNSIGNED8;
+    BEGIN
+		RETURN USub8Raw(n, m);
+	END USub8;
+	
+	PROCEDURE UINC32Raw(VAR n:SIGNED32);
+    BEGIN
+		INC(n);
+	END UINC32Raw;
+	
+	PROCEDURE UINC32*(VAR n:UNSIGNED32);
+    BEGIN
+		UINC32Raw(n);
+	END UINC32;
+	
+	PROCEDURE UDEC32Raw(VAR n:SIGNED32);
+    BEGIN
+		DEC(n);
+	END UDEC32Raw;
+	
+	PROCEDURE UDEC32*(VAR n:UNSIGNED32);
+    BEGIN
+		UDEC32Raw(n);
+	END UDEC32;
+	
+	PROCEDURE UBITS32Raw(n:SIGNED32): SET;
+    BEGIN
+		RETURN BITS(n)
+	END UBITS32Raw;
+	
+	PROCEDURE UBITS32*(n:UNSIGNED32): SET;
+    BEGIN
+		RETURN UBITS32Raw(n);
+	END UBITS32;
+	
+	PROCEDURE CQDRaw(val: SIGNED64;OUT high,low: SIGNED32);
+	BEGIN
+		high := UGetHighBits64(val);
+		low := SYSTEM.VAL(INTEGER, val)	
+	END CQDRaw;
+	
+	PROCEDURE CDWRaw(val: SIGNED32;OUT high,low: SIGNED16);
+	BEGIN
+		high := SYSTEM.VAL(SIGNED16, SYSTEM.LSH(val,-16));
+		low := SYSTEM.VAL(SIGNED16, val)	
+	END CDWRaw;
+
+	PROCEDURE CWBRaw(val: SIGNED16;OUT high,low: SIGNED8);
+	BEGIN
+		high := SYSTEM.VAL(SIGNED8, SYSTEM.LSH(val,-8));
+		low := SYSTEM.VAL(SIGNED8, val)	
+	END CWBRaw;
+	
+	PROCEDURE LONG8Raw(x:SIGNED8): SIGNED16;
+		VAR sip : SHORTINT_PARTS;
+	BEGIN
+		sip[high_part] := 0;
+		sip[low_part] := x;
+		RETURN SYSTEM.VAL(SIGNED16, sip);
+	END LONG8Raw;
+		
+	PROCEDURE LONG8*(x:UNSIGNED8): UNSIGNED16;
+	BEGIN
+		RETURN LONG8Raw(x);
+	END LONG8;
+	
+	PROCEDURE LONG16Raw(x:SIGNED16): SIGNED32;
+		VAR sip : INTEGER_PARTS;
+	BEGIN
+		sip[high_part] := 0;
+		sip[low_part] := x;
+		RETURN SYSTEM.VAL(SIGNED32, sip);
+	END LONG16Raw;
+	
+	PROCEDURE LONG16*(x:UNSIGNED16): UNSIGNED32;
+	BEGIN
+		RETURN LONG16Raw(x);
+	END LONG16;
+	
+	PROCEDURE LONG32Raw(x:SIGNED32): SIGNED64;
+		VAR sip : LONGINT_PARTS;
+	BEGIN
+		sip[high_part] := 0;
+		sip[low_part] := x;
+		RETURN SYSTEM.VAL(SIGNED64, sip);
+	END LONG32Raw;
+	
+	PROCEDURE UBitwiseAnd64*(x,y:UNSIGNED64): UNSIGNED64;
+		VAR lpx, lpy, lp_res : LONGINT_PARTS;
+	BEGIN
+		lpx := SYSTEM.VAL(LONGINT_PARTS, x);
+		lpy := SYSTEM.VAL(LONGINT_PARTS, y);
+		lp_res[0] := ORD(BITS(lpx[0]) * BITS(lpy[0]));
+		lp_res[1] := ORD(BITS(lpx[1]) * BITS(lpy[1]));
+		
+		RETURN SYSTEM.VAL(UNSIGNED64, lp_res);
+	END UBitwiseAnd64;
+	
+	PROCEDURE LONG32*(x:UNSIGNED32): UNSIGNED64;
+	BEGIN
+		RETURN LONG32Raw(x);
+	END LONG32;
+
+	PROCEDURE SHORT64Raw*(x:SIGNED64): SIGNED32;
+		VAR sip : LONGINT_PARTS;
+	BEGIN
+		sip := SYSTEM.VAL(LONGINT_PARTS, x);
+		RETURN sip[low_part];
+	END SHORT64Raw;
+	
+	PROCEDURE SHORTHIGH64Raw*(x:SIGNED64): SIGNED32;
+		VAR sip : LONGINT_PARTS;
+	BEGIN
+		sip := SYSTEM.VAL(LONGINT_PARTS, x);
+		RETURN sip[high_part];
+	END SHORTHIGH64Raw;
+	
+	PROCEDURE SHORT64*(x:UNSIGNED64): UNSIGNED32;
+	BEGIN
+		RETURN SHORT64Raw(x);
+	END SHORT64;
+	
+	PROCEDURE SHORTHIGH64*(x:UNSIGNED64): UNSIGNED32;
+	BEGIN
+		RETURN SHORTHIGH64Raw(x);
+	END SHORTHIGH64;
+	
+
+END CryptoAosCompat.

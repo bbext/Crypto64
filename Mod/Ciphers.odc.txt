@@ -1,0 +1,144 @@
+MODULE CryptoCiphers;
+
+(*	
+	empty cipher
+	2002.07.22	g.f.
+*)
+
+	IMPORT AO := CryptoAosCompat, Meta;
+
+	CONST
+		ECB* = 0;
+		CBC* = 1;
+		CTR* = 2;
+		Ok* = 0;
+
+	TYPE
+		Cipher* = POINTER TO EXTENSIBLE RECORD
+			name* : ARRAY 64 OF SHORTCHAR;
+			blockSize* : AO.SIGNED32;
+			isKeyInitialized* : BOOLEAN;
+			mode* : AO.SIGNED8;
+			len1*, len2* : AO.SIGNED16
+		END;
+		CipherFactory = PROCEDURE(): Cipher;
+
+
+	PROCEDURE (SELF: Cipher) appsize (size : AO.SIZE), NEW;
+		VAR
+			i, t, d: AO.SIZE;
+	BEGIN
+		IF (size = 64) OR (size = 128) THEN
+			RETURN
+		END;
+		SELF.len2 := SELF.len1;
+		i := 0;
+		t := 10000;
+		WHILE t > size DO
+			t := t DIV 10
+		END;
+		REPEAT
+			d := size DIV t MOD 10;
+			SELF.name[SELF.len2] := (*WARN CONV CAST*)SHORT(CHR(48 + d));
+			INC(SELF.len2);
+			t := t DIV 10
+		UNTIL t = 0;
+		SELF.name[SELF.len2] := 0X
+	END appsize;
+
+	PROCEDURE (SELF: Cipher) appmode (IN str : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			i, j: AO.SIGNED16;
+			c: SHORTCHAR;
+	BEGIN
+		j := SELF.len2;
+		i := (*WARN CONV CAST*)SHORT(0);
+		REPEAT
+			c := str[i];
+			INC(i);
+			SELF.name[j] := c;
+			INC(j)
+		UNTIL c = 0X
+	END appmode;
+
+	PROCEDURE (SELF: Cipher) InitKey* (IN src : ARRAY OF SHORTCHAR; keybits : AO.SIZE), NEW, EXTENSIBLE;
+	BEGIN
+		SELF.appsize(keybits);
+		SELF.isKeyInitialized := TRUE
+	END InitKey;
+
+	PROCEDURE (SELF: Cipher) SetIV* (IN src : ARRAY OF SHORTCHAR; mode : AO.SIGNED8), NEW, EXTENSIBLE;
+	BEGIN
+		ASSERT(SELF.isKeyInitialized);
+		ASSERT(mode IN {CBC, CTR});
+		SELF.mode := mode;
+		IF mode = CBC THEN
+			SELF.appmode("-cbc")
+		ELSE
+			SELF.appmode("-ctr")
+		END
+	END SetIV;
+
+	PROCEDURE (SELF: Cipher) Encrypt* (VAR buf : ARRAY OF SHORTCHAR; pos, len : AO.SIZE), NEW, EXTENSIBLE;
+	END Encrypt;
+
+	PROCEDURE (SELF: Cipher) Decrypt* (VAR buf : ARRAY OF SHORTCHAR; pos, len : AO.SIZE), NEW, EXTENSIBLE;
+	END Decrypt;
+
+	PROCEDURE (SELF: Cipher) SetNameAndBlocksize* (IN name : ARRAY OF SHORTCHAR; size : AO.SIGNED32), NEW;
+
+	BEGIN
+		AO.COPY(name, SELF.name);
+		SELF.len1 := (*WARN CONV CAST*)SHORT(0);
+		WHILE name[SELF.len1] # 0X DO
+			INC(SELF.len1)
+		END;
+		SELF.len2 := SELF.len1;
+		SELF.blockSize := size
+	END SetNameAndBlocksize;
+
+	PROCEDURE (SELF: Cipher) Init* , NEW, EXTENSIBLE;
+
+	BEGIN
+		SELF.mode := (*WARN CONV CAST*)SHORT(ECB);
+		SELF.isKeyInitialized := FALSE;
+		SELF.SetNameAndBlocksize("empty cipher", 8)
+	END Init;
+
+	PROCEDURE GETPROCEDURE(modname, name:ARRAY OF SHORTCHAR;  OUT factory : CipherFactory);
+		VAR 
+			it: Meta.Item; 
+			val: RECORD (Meta.Value) proc: CipherFactory END; 
+			ok: BOOLEAN;
+			fullName : ARRAY 256 OF SHORTCHAR;
+		BEGIN
+			fullName := modname$ + "." + name$;
+			Meta.LookupPath(LONG(fullName), it);
+			IF it.Valid() THEN
+			    it.GetVal(val, ok);
+    			IF ok THEN (* val.proc # NIL, теперь можно вызвать *) 
+					factory := val.proc; 
+				END
+		    END
+		END GETPROCEDURE;
+
+	PROCEDURE NewCipher* (IN modname : ARRAY OF SHORTCHAR): Cipher;
+		VAR
+			cipher: Cipher;
+			factory: CipherFactory;
+
+
+	BEGIN
+		cipher := NIL;
+		IF modname # "" THEN
+			GETPROCEDURE(modname, "NewCipher", factory);
+			IF (factory # NIL) THEN
+				cipher := factory()
+			END
+		ELSE
+			NEW(cipher)
+		END;
+		RETURN cipher
+	END NewCipher;
+
+END CryptoCiphers.

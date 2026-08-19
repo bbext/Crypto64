@@ -1,0 +1,1918 @@
+MODULE CryptoAosStrings;
+
+	(** AUTHOR "be,tf, staubesv"; PURPOSE "String functions" *)
+
+	IMPORT RC := (*CONV FROM RealConversions*)
+CryptoAosRealConversions, AO := CryptoAosCompat, SYSTEM;
+
+	CONST
+		Ok* = 0;
+		SyntaxError* = 1;
+		BaseError* = 2;
+		RangeError* = 3;
+		EmptyStringError* = 4;
+		FullStringError* = 5;
+		radix10 = 10;
+		radix16 = 16;
+
+	TYPE
+		String* = POINTER TO ARRAY OF SHORTCHAR;
+		StringArray* = POINTER TO ARRAY OF String;
+
+
+	PROCEDURE Length* (IN string : ARRAY OF SHORTCHAR): AO.SIZE;
+		VAR
+			len: AO.SIZE;
+
+
+	BEGIN
+		len := 0;
+		WHILE (string[len] # 0X) DO
+			INC(len)
+		END;
+		RETURN len
+	END Length;
+
+
+	PROCEDURE Move* (IN src : ARRAY OF SHORTCHAR; soff, len : AO.SIZE; VAR dst : ARRAY OF SHORTCHAR; doff : AO.SIZE);
+
+	BEGIN
+		IF soff < doff THEN
+			INC(soff, len - 1);
+			INC(doff, len - 1);
+			WHILE len > 0 DO
+				dst[doff] := src[soff];
+				DEC(soff);
+				DEC(doff);
+				DEC(len)
+			END
+		ELSE
+			WHILE len > 0 DO
+				dst[doff] := src[soff];
+				INC(soff);
+				INC(doff);
+				DEC(len)
+			END
+		END
+	END Move;
+
+	PROCEDURE Truncate* (VAR string : ARRAY OF SHORTCHAR; length : AO.SIZE);
+
+	BEGIN
+		IF LEN(string) > length THEN
+			string[length] := 0X
+		END
+	END Truncate;
+
+	PROCEDURE Concat* (IN s1, s2 : ARRAY OF SHORTCHAR; VAR s : ARRAY OF SHORTCHAR);
+		VAR
+			len1, len2: AO.SIZE;
+
+
+	BEGIN
+		len1 := Length(s1);
+		len2 := Length(s2);
+		Move(s2, 0, len2, s, len1);
+		Move(s1, 0, len1, s, 0);
+		Truncate(s, len1 + len2)
+	END Concat;
+
+	PROCEDURE Append* (VAR s : ARRAY OF SHORTCHAR; IN appendix : ARRAY OF SHORTCHAR);
+
+	BEGIN
+		Concat(s, appendix, s)
+	END Append;
+
+	PROCEDURE AddAC* (a : String; IN b : ARRAY OF SHORTCHAR): String;
+		VAR
+			str: String;
+
+
+	BEGIN
+		NEW(str, LEN(a) + Length(b));
+		AO.COPY(a^, str^);
+		Append(str^, b);
+		RETURN str
+	END AddAC;
+
+	PROCEDURE AppendChar* (VAR s : ARRAY OF SHORTCHAR; ch : SHORTCHAR);
+		VAR
+			cs: ARRAY 2 OF SHORTCHAR;
+
+
+	BEGIN
+		cs[0] := ch;
+		cs[1] := 0X;
+		Append(s, cs)
+	END AppendChar;
+
+	PROCEDURE AddC* (a : String; b : SHORTCHAR): String;
+		VAR
+			str: String;
+
+
+	BEGIN
+		NEW(str, LEN(a) + 1);
+		AO.COPY(a^, str^);
+		AppendChar(str^, b);
+		RETURN str
+	END AddC;
+
+	PROCEDURE AddS* (a, b : String): String;
+		VAR
+			str: String;
+
+
+	BEGIN
+		NEW(str, LEN(a) + LEN(b));
+		AO.COPY(a^, str^);
+		Append(str^, b^);
+		RETURN str
+	END AddS;
+
+	PROCEDURE IntToStr* (x : AO.SIGNED64; VAR s : ARRAY OF SHORTCHAR);
+		VAR
+			i, j: AO.SIZE;
+			x0: AO.SIGNED64;
+			digits: ARRAY 21 OF SHORTCHAR;
+
+
+	BEGIN
+		IF x < 0 THEN
+			IF x = MIN(AO.SIGNED64) THEN
+				AO.COPY("-9223372036854775808", s);
+				RETURN
+			ELSE
+				x0 := (-x);
+				s[0] := "-";
+				j := 1
+			END
+		ELSE
+			x0 := x;
+			j := 0
+		END;
+		i := 0;
+		REPEAT
+			digits[i] := (*WARN CONV CAST*)SHORT(CHR(x0 MOD 10 + 30H));
+			x0 := x0 DIV 10;
+			INC(i)
+		UNTIL x0 = 0;
+		REPEAT
+			DEC(i);
+			s[j] := digits[i];
+			INC(j)
+		UNTIL i = 0;
+		s[j] := 0X
+	END IntToStr;
+
+	PROCEDURE AddS64* (a : String; b : AO.SIGNED64): String;
+		VAR
+			digits: ARRAY 32 OF SHORTCHAR;
+			str: String;
+
+
+	BEGIN
+		IntToStr(b, digits);
+		NEW(str, LEN(a) + Length(digits));
+		AO.COPY(a^, str^);
+		Append(str^, digits);
+		RETURN str
+	END AddS64;
+
+	PROCEDURE AddF64* (a : String; b : AO.FLOAT64): String;
+		VAR
+			digits: ARRAY 32 OF SHORTCHAR;
+			str: String;
+
+
+	BEGIN
+		RC.RealToString(b, 18, digits);
+		NEW(str, LEN(a) + Length(digits));
+		AO.COPY(a^, str^);
+		Append(str^, digits);
+		RETURN str
+	END AddF64;
+
+
+	PROCEDURE Find* (IN string : ARRAY OF SHORTCHAR; pos : AO.SIZE; ch : SHORTCHAR): AO.SIZE;
+
+	BEGIN
+		WHILE (string[pos] # 0X) & (string[pos] # ch) DO
+			INC(pos)
+		END;
+		IF string[pos] = 0X THEN
+			pos := (-1)
+		END;
+		RETURN pos
+	END Find;
+
+	PROCEDURE Count* (IN string : ARRAY OF SHORTCHAR; ch : SHORTCHAR): AO.SIZE;
+		VAR
+			count, pos: AO.SIZE;
+
+
+	BEGIN
+		count := 0;
+		pos := Find(string, 0, ch);
+		WHILE pos # (-1) DO
+			INC(count);
+			pos := Find(string, pos + 1, ch)
+		END;
+		RETURN count
+	END Count;
+
+
+	PROCEDURE Pos* (IN pattern, string : ARRAY OF SHORTCHAR): AO.SIZE;
+		CONST
+			q = 8204957;
+			d = 256;
+
+		VAR
+			h1, h2, dM: AO.SIGNED32;
+			i, j, m, n: AO.SIZE;
+			found: BOOLEAN;
+
+
+	BEGIN
+		m := Length(pattern);
+		n := Length(string);
+		IF (m > n) THEN
+			RETURN (-1)
+		END;
+		dM := 1;
+		FOR i := 0 TO m - 2 DO
+			dM := (d * dM) MOD q
+		END;
+		h1 := 0;
+		FOR i := 0 TO m - 1 DO
+			h1 := (h1 * d + ORD(pattern[i])) MOD q
+		END;
+		h2 := 0;
+		FOR i := 0 TO m - 1 DO
+			h2 := (h2 * d + ORD(string[i])) MOD q
+		END;
+		i := 0;
+		found := FALSE;
+		IF (h1 = h2) THEN
+			j := 0;
+			found := TRUE;
+			WHILE (j < m) DO
+				IF (string[j] # pattern[j]) THEN
+					found := FALSE;
+					j := m
+				END;
+				INC(j)
+			END
+		END;
+		WHILE ~found & (i < n - m) DO
+			h2 := (h2 + d * q - ORD(string[i]) * dM) MOD q;
+			h2 := (h2 * d + ORD(string[i + m])) MOD q;
+			INC(i);
+			IF (h1 = h2) THEN
+				j := 0;
+				found := TRUE;
+				WHILE (j < m) DO
+					IF (string[i + j] # pattern[j]) THEN
+						found := FALSE;
+						j := m
+					END;
+					INC(j)
+				END
+			END
+		END;
+		IF found THEN
+			RETURN i
+		ELSE
+			RETURN (-1)
+		END
+	END Pos;
+
+
+	PROCEDURE UpperCaseChar* (VAR ch : SHORTCHAR);
+
+	BEGIN
+		IF ("a" <= ch) & (ch <= "z") THEN
+			ch := CAP(ch)
+		END
+	END UpperCaseChar;
+
+	PROCEDURE GenericPos* (IN pattern : ARRAY OF SHORTCHAR; from : AO.SIZE; IN string : ARRAY OF SHORTCHAR; ignoreCase, backwards : BOOLEAN): AO.SIZE;
+		CONST
+			q = 8204957;
+			d = 256;
+
+		VAR
+			ch, chp: SHORTCHAR;
+			h1, h2, dM: AO.SIGNED32;
+			i, j, patternLength, stringLength: AO.SIZE;
+			found: BOOLEAN;
+
+
+	BEGIN
+		patternLength := Length(pattern);
+		stringLength := Length(string);
+		IF backwards THEN
+			IF (patternLength > from + 1) THEN
+				RETURN (-1)
+			END
+		ELSE
+			IF (from + patternLength > stringLength) THEN
+				RETURN (-1)
+			END
+		END;
+		dM := 1;
+		FOR i := 0 TO patternLength - 2 DO
+			dM := (d * dM) MOD q
+		END;
+		h1 := 0;
+		FOR i := 0 TO patternLength - 1 DO
+			IF backwards THEN
+				ch := pattern[patternLength - 1 - i]
+			ELSE
+				ch := pattern[i]
+			END;
+			IF ignoreCase THEN
+				UpperCaseChar(ch)
+			END;
+			h1 := (h1 * d + ORD(ch)) MOD q
+		END;
+		h2 := 0;
+		FOR i := 0 TO patternLength - 1 DO
+			IF backwards THEN
+				ch := string[from - i]
+			ELSE
+				ch := string[from + i]
+			END;
+			IF ignoreCase THEN
+				UpperCaseChar(ch)
+			END;
+			h2 := (h2 * d + ORD(ch)) MOD q
+		END;
+		i := from;
+		found := FALSE;
+		IF (h1 = h2) THEN
+			j := 0;
+			found := TRUE;
+			WHILE (j < patternLength) DO
+				ch := string[from + j];
+				chp := pattern[j];
+				IF ignoreCase THEN
+					UpperCaseChar(ch);
+					UpperCaseChar(chp)
+				END;
+				IF (ch # chp) THEN
+					found := FALSE;
+					j := patternLength
+				END;
+				INC(j)
+			END
+		END;
+		LOOP
+			IF found THEN
+				EXIT
+			END;
+			IF backwards THEN
+				IF (i < patternLength) THEN
+					EXIT
+				END
+			ELSE
+				IF (i >= stringLength - patternLength) THEN
+					EXIT
+				END
+			END;
+			ch := string[i];
+			IF ignoreCase THEN
+				UpperCaseChar(ch)
+			END;
+			h2 := (h2 + d * q - ORD(ch) * dM) MOD q;
+			IF backwards THEN
+				ch := string[i - patternLength]
+			ELSE
+				ch := string[i + patternLength]
+			END;
+			IF ignoreCase THEN
+				UpperCaseChar(ch)
+			END;
+			h2 := (h2 * d + ORD(ch)) MOD q;
+			IF backwards THEN
+				DEC(i)
+			ELSE
+				INC(i)
+			END;
+			IF (h1 = h2) THEN
+				j := 0;
+				found := TRUE;
+				WHILE (j < patternLength) DO
+					IF backwards THEN
+						ch := string[i - patternLength + 1 + j]
+					ELSE
+						ch := string[i + j]
+					END;
+					chp := pattern[j];
+					IF ignoreCase THEN
+						UpperCaseChar(ch);
+						UpperCaseChar(chp)
+					END;
+					IF (ch # chp) THEN
+						found := FALSE;
+						j := patternLength
+					END;
+					INC(j)
+				END
+			END
+		END;
+		IF found THEN
+			IF backwards THEN
+				RETURN i - patternLength + 1
+			ELSE
+				RETURN i
+			END
+		ELSE
+			RETURN (-1)
+		END
+	END GenericPos;
+
+	PROCEDURE Match* (IN mask, name : ARRAY OF SHORTCHAR): BOOLEAN;
+		VAR
+			m, n, om, on: AO.SIZE;
+			f: BOOLEAN;
+
+
+	BEGIN
+		m := 0;
+		n := 0;
+		om := (-1);
+		f := TRUE;
+		LOOP
+			IF (mask[m] = "*") THEN
+				om := m;
+				INC(m);
+				WHILE (name[n] # 0X) & (name[n] # mask[m]) DO
+					INC(n)
+				END;
+				on := n
+			ELSIF (mask[m] = "?") THEN
+				IF (name[n] = 0X) THEN
+					f := FALSE;
+					EXIT
+				END;
+				INC(m);
+				INC(n)
+			ELSE
+				IF (mask[m] # name[n]) THEN
+					IF (om = (-1)) THEN
+						f := FALSE;
+						EXIT
+					ELSIF (name[n] # 0X) THEN
+						m := om;
+						n := on + 1;
+						IF (name[n] = 0X) THEN
+							f := FALSE;
+							EXIT
+						END
+					ELSE
+						f := FALSE;
+						EXIT
+					END
+				ELSE
+					INC(m);
+					INC(n)
+				END
+			END;
+			IF (mask[m] = 0X) & ((name[n] = 0X) OR (om = (-1))) THEN
+				EXIT
+			END
+		END;
+		RETURN f & (name[n] = 0X)
+	END Match;
+
+
+
+	PROCEDURE ConcatX* (IN s1, s2 : ARRAY OF SHORTCHAR; VAR s : ARRAY OF SHORTCHAR);
+		VAR
+			len1, len2: AO.SIZE;
+
+
+	BEGIN
+		len1 := Length(s1);
+		len2 := Length(s2);
+		IF (len1 + 1 >= LEN(s)) THEN
+			AO.COPY(s1, s)
+		ELSE
+			IF (len1 + len2 + 1 > LEN(s)) THEN
+				len2 := LEN(s) - 1 - len1
+			END;
+			Move(s2, 0, len2, s, len1);
+			Move(s1, 0, len1, s, 0);
+			Truncate(s, len1 + len2)
+		END
+	END ConcatX;
+
+
+	PROCEDURE AppendX* (VAR s : ARRAY OF SHORTCHAR; IN appendix : ARRAY OF SHORTCHAR);
+
+	BEGIN
+		ConcatX(s, appendix, s)
+	END AppendX;
+
+	PROCEDURE AppendInt* (VAR s : ARRAY OF SHORTCHAR; num : AO.SIGNED64);
+		VAR
+			number: ARRAY 21 OF SHORTCHAR;
+
+
+	BEGIN
+		IntToStr(num, number);
+		Append(s, number)
+	END AppendInt;
+
+
+
+	PROCEDURE Copy* (IN src : ARRAY OF SHORTCHAR; index, len : AO.SIZE; VAR dst : ARRAY OF SHORTCHAR);
+
+	BEGIN
+		Move(src, index, len, dst, 0);
+		Truncate(dst, len)
+	END Copy;
+
+	PROCEDURE Delete* (VAR s : ARRAY OF SHORTCHAR; index, count : AO.SIZE);
+		VAR
+			len: AO.SIZE;
+
+
+	BEGIN
+		len := Length(s);
+		Move(s, index + count, len - index - count, s, index);
+		Truncate(s, len - count)
+	END Delete;
+
+	PROCEDURE Insert* (IN src : ARRAY OF SHORTCHAR; VAR dst : ARRAY OF SHORTCHAR; index : AO.SIZE);
+		VAR
+			slen, dlen: AO.SIZE;
+
+
+	BEGIN
+		slen := Length(src);
+		dlen := Length(dst);
+		Move(dst, index, dlen - index, dst, index + slen);
+		Move(src, 0, slen, dst, index);
+		Truncate(dst, slen + dlen)
+	END Insert;
+
+	PROCEDURE TrimLeft* (VAR string : ARRAY OF SHORTCHAR; c : SHORTCHAR);
+		VAR
+			len, index: AO.SIZE;
+
+
+	BEGIN
+		len := Length(string);
+		index := 0;
+		WHILE (index # len) & (string[index] = c) DO
+			INC(index)
+		END;
+		Delete(string, 0, index)
+	END TrimLeft;
+
+	PROCEDURE TrimRight* (VAR string : ARRAY OF SHORTCHAR; c : SHORTCHAR);
+		VAR
+			len, index: AO.SIZE;
+
+
+	BEGIN
+		len := Length(string);
+		index := len;
+		WHILE (index # 0) & (string[index - 1] = c) DO
+			DEC(index)
+		END;
+		Delete(string, index, len - index)
+	END TrimRight;
+
+	PROCEDURE Trim* (VAR string : ARRAY OF SHORTCHAR; c : SHORTCHAR);
+
+	BEGIN
+		TrimLeft(string, c);
+		TrimRight(string, c)
+	END Trim;
+
+	PROCEDURE Split* (IN string : ARRAY OF SHORTCHAR; separator : SHORTCHAR): StringArray;
+		VAR
+			count, index, pos, next: AO.SIZE;
+			result: StringArray;
+
+
+	BEGIN
+		count := Count(string, separator);
+		NEW(result, count + 1);
+		pos := 0;
+		FOR index := 0 TO count DO
+			next := Find(string, pos, separator);
+			IF next = (-1) THEN
+				next := Length(string)
+			END;
+			NEW(result[index], next - pos + 1);
+			Copy(string, pos, next - pos, result[index]^);
+			pos := next + 1
+		END;
+		RETURN result
+	END Split;
+
+	PROCEDURE Join* (strings : StringArray; startIndex, endIndex : AO.SIZE; separator : SHORTCHAR): String;
+		VAR
+			string: String;
+			length, pos, i: AO.SIZE;
+
+
+	BEGIN
+		ASSERT((strings # NIL) & (LEN(strings) >= 1));
+		ASSERT((0 <= startIndex) & (startIndex <= endIndex) & (endIndex < LEN(strings)));
+		length := 1;
+		IF (separator # 0X) THEN
+			length := length + (endIndex - startIndex)
+		END;
+		FOR i := startIndex TO endIndex DO
+			length := length + Length(strings[i]^)
+		END;
+		pos := 0;
+		NEW(string, length);
+		FOR i := startIndex TO endIndex DO
+			length := Length(strings[i]^);
+			Move(strings[i]^, 0, length, string^, pos);
+			pos := pos + length;
+			IF (i < endIndex) & (separator # 0X) THEN
+				string[pos] := separator;
+				INC(pos)
+			END
+		END;
+		string^[LEN(string) - 1] := 0X;
+		ASSERT((string # NIL) & (LEN(string) > 0) & (string^[LEN(string) - 1] = 0X));
+		RETURN string
+	END Join;
+
+	PROCEDURE LOW* (ch : SHORTCHAR): SHORTCHAR;
+
+	BEGIN
+		IF (ch >= "A") & (ch <= "Z") THEN
+			RETURN (*WARN CONV CAST*)SHORT(CHR(ORD(ch) - ORD("A") + ORD("a")))
+		ELSE
+			RETURN ch
+		END
+	END LOW;
+
+	PROCEDURE LowerCase* (VAR s : ARRAY OF SHORTCHAR);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		i := 0;
+		WHILE (s[i] # 0X) DO
+			s[i] := LOW(s[i]);
+			INC(i)
+		END
+	END LowerCase;
+
+	PROCEDURE UP* (ch : SHORTCHAR): SHORTCHAR;
+
+	BEGIN
+		IF ("a" <= ch) & (ch <= "z") THEN
+			ch := CAP(ch)
+		END;
+		RETURN ch
+	END UP;
+
+
+	PROCEDURE UpperCase* (VAR s : ARRAY OF SHORTCHAR);
+		VAR
+			i: AO.SIZE;
+			c: SHORTCHAR;
+
+
+	BEGIN
+		i := 0;
+		WHILE (s[i] # 0X) DO
+			c := s[i];
+			IF ('a' <= c) & (c <= 'z') THEN
+				s[i] := CAP(c)
+			END;
+			INC(i)
+		END
+	END UpperCase;
+
+	PROCEDURE IsPrintable* (ch : SHORTCHAR): BOOLEAN;
+
+	BEGIN
+		RETURN (ch >= 20X) & (ch <= 7EX)
+	END IsPrintable;
+
+	PROCEDURE BoolToStr* (b : BOOLEAN; VAR s : ARRAY OF SHORTCHAR);
+		CONST
+			True = "True";
+			False = "False";
+
+
+	BEGIN
+		IF b THEN
+			AO.COPY(True, s)
+		ELSE
+			AO.COPY(False, s)
+		END
+	END BoolToStr;
+
+	PROCEDURE StrToBool* (IN s : ARRAY OF SHORTCHAR; VAR b : BOOLEAN);
+
+	BEGIN
+		b := CAP(s[0]) = "T"
+	END StrToBool;
+
+
+	PROCEDURE IsDigit* (c : SHORTCHAR; radix : AO.UNSIGNED32; VAR d : AO.SIGNED32): BOOLEAN;
+		VAR
+			t: AO.UNSIGNED32;
+
+
+	BEGIN
+		t := AO.TOUNSIGNED32(ORD(c) - ORD('0'));
+		IF AO.UGtr32(t, AO.TOUNSIGNED32(radix10)) THEN
+			t := AO.TOUNSIGNED32(ORD(CAP(c)) - ORD('A') + 10);
+			IF AO.UGeq32(t, radix) THEN
+				RETURN FALSE
+			END
+		END;
+		d := AO.TOSIGNED32(t);
+		RETURN AO.ULss32(t, radix)
+	END IsDigit;
+
+	PROCEDURE TryScanUInt32At* (VAR pos : AO.SIZE; IN number : ARRAY OF SHORTCHAR; base : AO.UNSIGNED32; VAR value : AO.UNSIGNED32; VAR res : INTEGER): BOOLEAN;
+		VAR
+			len: AO.SIZE;
+			answer: AO.UNSIGNED32;
+			d: AO.SIGNED32;
+			c: SHORTCHAR;
+			hasPrefix: BOOLEAN;
+			try: AO.UNSIGNED32;
+
+
+	BEGIN
+		hasPrefix := FALSE;
+		d := 0;
+		answer := AO.TOUNSIGNED32(0);
+		len := LEN(number);
+		IF (pos >= len) OR (number[pos] = 0X) THEN
+			res := EmptyStringError;
+			value := (*WARN CONV CAST*)AO.TOUNSIGNED32(0);
+			RETURN FALSE
+		END;
+		IF AO.UEq32(base, AO.TOUNSIGNED32(0)) THEN
+			base := (*WARN CONV CAST*)AO.TOUNSIGNED32(10);
+			IF (number[pos] = '0') & (pos + 2 <= len) THEN
+				c := number[pos + 1];
+				IF c = 'b' THEN
+					INC(pos, 2);
+					base := (*WARN CONV CAST*)AO.TOUNSIGNED32(2);
+					hasPrefix := TRUE
+				ELSIF c = 'o' THEN
+					INC(pos, 2);
+					base := (*WARN CONV CAST*)AO.TOUNSIGNED32(8);
+					hasPrefix := TRUE
+				ELSIF (c = 'x') OR (c = 'u') THEN
+					INC(pos, 2);
+					base := (*WARN CONV CAST*)AO.TOUNSIGNED32(16);
+					hasPrefix := TRUE
+				END;
+				IF (number[pos] = "'") & (pos + 1 < len) & IsDigit(number[pos + 1], base, d) THEN
+					INC(pos)
+				END
+			END
+		ELSIF (AO.ULss32(base, AO.TOUNSIGNED32(2))) OR (AO.UGtr32(base, AO.TOUNSIGNED32(16))) THEN
+			res := BaseError;
+			value := (*WARN CONV CAST*)AO.TOUNSIGNED32(0);
+			RETURN FALSE
+		END;
+		IF (pos >= len) OR ~IsDigit(number[pos], base, d) THEN
+			res := SyntaxError;
+			value := (*WARN CONV CAST*)AO.TOUNSIGNED32(0);
+			RETURN FALSE
+		END;
+		answer := (*WARN CONV CAST*)AO.TOUNSIGNED32(d);
+		INC(pos);
+		LOOP
+			c := number[pos];
+			IF IsDigit(c, base, d) THEN
+				IF AO.UGtr32(answer, AO.UDiv32(AO.MAX_UNSIGNED32(), base)) THEN
+					res := RangeError;
+					value := AO.MAX_UNSIGNED32();
+					RETURN FALSE
+				END;
+				answer := (*WARN CONV CAST*)(AO.UMul32(answer, base));
+				try := AO.UAdd32(answer, AO.TOUNSIGNED32(d));
+				IF (AO.ULss32(try, answer)) THEN
+					res := RangeError;
+					value := AO.MAX_UNSIGNED32();
+					RETURN FALSE
+				END;
+				answer := try
+			ELSIF (c = "'") THEN
+				IF ((pos + 1 >= len) OR ~IsDigit(number[pos + 1], base, d)) THEN
+					res := SyntaxError;
+					value := (*WARN CONV CAST*)AO.TOUNSIGNED32(0);
+					RETURN FALSE
+				END
+			ELSE
+				EXIT
+			END;
+			INC(pos)
+		END;
+		IF (AO.UEq32(base, AO.TOUNSIGNED32(16))) & ~hasPrefix & (number[pos] = "H") THEN
+			INC(pos)
+		END;
+		value := answer;
+		res := Ok;
+		RETURN TRUE
+	END TryScanUInt32At;
+
+	PROCEDURE TryScanInt32At* (VAR pos : AO.SIZE; IN number : ARRAY OF SHORTCHAR; base : AO.UNSIGNED32; VAR value : AO.SIGNED32; VAR res : INTEGER): BOOLEAN;
+		VAR
+			answer: AO.UNSIGNED32;
+			isNegative: BOOLEAN;
+
+
+	BEGIN
+		isNegative := number[pos] = '-';
+		IF isNegative OR (number[pos] = "+") THEN
+			INC(pos)
+		END;
+		value := 0;
+		IF TryScanUInt32At(pos, number, base, answer, res) THEN
+			IF isNegative THEN
+				IF AO.ULeq32(answer, AO.TOUNSIGNED32((MIN(AO.SIGNED32)))) THEN
+					value := (-AO.TOSIGNED32(answer));
+					RETURN TRUE
+				ELSE
+					res := RangeError;
+					value := MIN(AO.SIGNED32)
+				END
+			ELSE
+				IF AO.ULeq32(answer, AO.TOUNSIGNED32((MAX(AO.SIGNED32)))) THEN
+					value := AO.TOSIGNED32(answer);
+					RETURN TRUE
+				ELSE
+					res := RangeError;
+					value := MAX(AO.SIGNED32)
+				END
+			END
+		END;
+		RETURN FALSE
+	END TryScanInt32At;
+
+	PROCEDURE TryScanUInt64At* (VAR pos : AO.SIZE; IN number : ARRAY OF SHORTCHAR; base : AO.UNSIGNED32; VAR value : AO.UNSIGNED64; VAR res : INTEGER): BOOLEAN;
+		VAR
+			len: AO.SIZE;
+			answer: AO.UNSIGNED64;
+			d: AO.SIGNED32;
+			c: SHORTCHAR;
+			hasPrefix: BOOLEAN;
+			try: AO.UNSIGNED64;
+
+
+	BEGIN
+		hasPrefix := FALSE;
+		d := 0;
+		answer := AO.TOUNSIGNED64(0);
+		len := LEN(number);
+		IF (pos >= len) OR (number[pos] = 0X) THEN
+			res := EmptyStringError;
+			value := (*WARN CONV CAST*)AO.TOUNSIGNED64(0);
+			RETURN FALSE
+		END;
+		IF AO.UEq32(base, AO.TOUNSIGNED32(0)) THEN
+			base := (*WARN CONV CAST*)AO.TOUNSIGNED32(10);
+			IF (number[pos] = '0') & (pos + 2 <= len) THEN
+				c := number[pos + 1];
+				IF c = 'b' THEN
+					INC(pos, 2);
+					base := (*WARN CONV CAST*)AO.TOUNSIGNED32(2);
+					hasPrefix := TRUE
+				ELSIF c = 'o' THEN
+					INC(pos, 2);
+					base := (*WARN CONV CAST*)AO.TOUNSIGNED32(8);
+					hasPrefix := TRUE
+				ELSIF (c = 'x') OR (c = 'u') THEN
+					INC(pos, 2);
+					base := (*WARN CONV CAST*)AO.TOUNSIGNED32(16);
+					hasPrefix := TRUE
+				END;
+				IF (number[pos] = "'") & (pos + 1 < len) & IsDigit(number[pos + 1], base, d) THEN
+					INC(pos)
+				END
+			END
+		ELSIF (AO.ULss32(base, AO.TOUNSIGNED32(2))) OR (AO.UGtr32(base, AO.TOUNSIGNED32(16))) THEN
+			res := BaseError;
+			value := (*WARN CONV CAST*)AO.TOUNSIGNED64(0);
+			RETURN FALSE
+		END;
+		IF (pos >= len) OR ~IsDigit(number[pos], base, d) THEN
+			res := SyntaxError;
+			value := (*WARN CONV CAST*)AO.TOUNSIGNED64(0);
+			RETURN FALSE
+		END;
+		answer := (*WARN CONV CAST*)AO.TOUNSIGNED64(d);
+		INC(pos);
+		LOOP
+			c := number[pos];
+			IF IsDigit(c, base, d) THEN
+				IF AO.UGtr64(answer, AO.UDiv64(AO.MAX_UNSIGNED64(),  AO.LONG32(base))) THEN
+					res := RangeError;
+					value := AO.MAX_UNSIGNED64();
+					RETURN FALSE
+				END;
+				answer := (*WARN CONV CAST*)(AO.UMul64(answer, AO.LONG32(base)));
+				try := AO.UAdd64(answer, AO.LONG32(AO.TOUNSIGNED32(d)));
+				IF (AO.ULss64(try, answer)) THEN
+					res := RangeError;
+					value := AO.MAX_UNSIGNED64();
+					RETURN FALSE
+				END;
+				answer := try
+			ELSIF (c = "'") THEN
+				IF ((pos + 1 >= len) OR ~IsDigit(number[pos + 1], base, d)) THEN
+					res := SyntaxError;
+					value := (*WARN CONV CAST*)AO.TOUNSIGNED64(0);
+					RETURN FALSE
+				END
+			ELSE
+				EXIT
+			END;
+			INC(pos)
+		END;
+		IF (AO.UEq32(base, AO.TOUNSIGNED32(16))) & ~hasPrefix & (number[pos] = "H") THEN
+			INC(pos)
+		END;
+		value := answer;
+		res := Ok;
+		RETURN TRUE
+	END TryScanUInt64At;
+
+	PROCEDURE TryScanInt64At* (VAR pos : AO.SIZE; IN number : ARRAY OF SHORTCHAR; base : AO.UNSIGNED32; VAR value : AO.SIGNED64; VAR res : INTEGER): BOOLEAN;
+		VAR
+			answer: AO.UNSIGNED64;
+			isNegative: BOOLEAN;
+
+
+	BEGIN
+		isNegative := number[pos] = '-';
+		IF isNegative OR (number[pos] = "+") THEN
+			INC(pos)
+		END;
+		value := (*WARN CONV CAST*)LONG(0);
+		IF TryScanUInt64At(pos, number, base, answer, res) THEN
+			IF isNegative THEN
+				IF AO.ULeq64(answer, AO.TOUNSIGNED64((MIN(AO.SIGNED64)))) THEN
+					value := (-AO.TOSIGNED64(answer));
+					RETURN TRUE
+				ELSE
+					res := RangeError;
+					value := MIN(AO.SIGNED64)
+				END
+			ELSE
+				IF AO.ULeq64(answer, AO.TOUNSIGNED64((MAX(AO.SIGNED64)))) THEN
+					value := AO.TOSIGNED64(answer);
+					RETURN TRUE
+				ELSE
+					res := RangeError;
+					value := MAX(AO.SIGNED64)
+				END
+			END
+		END;
+		RETURN FALSE
+	END TryScanInt64At;
+
+	PROCEDURE TryParseUInt32* (IN number : ARRAY OF SHORTCHAR; VAR value : AO.UNSIGNED32; pos : AO.SIZE): BOOLEAN;
+		VAR
+			len: AO.SIZE;
+			answer: AO.UNSIGNED32;
+			base, d: AO.SIGNED32;
+			c: SHORTCHAR;
+			try: AO.UNSIGNED32;
+
+
+	BEGIN
+		d := 0;
+		base := radix10;
+		answer := AO.TOUNSIGNED32(0);
+		len := LEN(number);
+		pos := 0;
+		IF (number[pos] = '0') & (pos + 2 <= len) THEN
+			c := number[pos + 1];
+			IF c = 'b' THEN
+				INC(pos, 2);
+				base := 2
+			ELSIF c = 'o' THEN
+				INC(pos, 2);
+				base := 8
+			ELSIF (c = 'x') OR (c = 'u') THEN
+				INC(pos, 2);
+				base := 16
+			END
+		END;
+		IF (pos >= len) OR ~IsDigit(number[pos], (*WARN CONV CAST*)AO.TOUNSIGNED32(base), d) THEN
+			value := (*WARN CONV CAST*)AO.TOUNSIGNED32(0);
+			RETURN FALSE
+		END;
+		answer := (*WARN CONV CAST*)AO.TOUNSIGNED32(d);
+		INC(pos);
+		WHILE (pos < len) & IsDigit(number[pos], (*WARN CONV CAST*)AO.TOUNSIGNED32(base), d) DO
+			IF AO.UGtr32(answer, AO.UDiv32(AO.MAX_UNSIGNED32(), AO.TOUNSIGNED32(base))) THEN
+				value := AO.MAX_UNSIGNED32();
+				RETURN FALSE
+			END;
+			answer := (*WARN CONV CAST*)(AO.UMul32(answer, AO.TOUNSIGNED32(base)));
+			try := AO.UAdd32(answer, AO.TOUNSIGNED32(d));
+			IF AO.ULss32(try, answer) THEN
+				value := AO.MAX_UNSIGNED32();
+				RETURN FALSE
+			END;
+			answer := try;
+			INC(pos)
+		END;
+		value := answer;
+		RETURN TRUE
+	END TryParseUInt32;
+
+	PROCEDURE TryParseInt32* (IN number : ARRAY OF SHORTCHAR; VAR value : AO.SIGNED32; pos : AO.SIZE): BOOLEAN;
+		VAR
+			answer: AO.UNSIGNED32;
+			isNegative: BOOLEAN;
+
+
+	BEGIN
+		isNegative := number[pos] = "-";
+		answer := AO.TOUNSIGNED32(0);
+		pos := 0;
+		IF isNegative OR (number[pos] = "+") THEN
+			INC(pos)
+		END;
+		value := 0;
+		IF TryParseUInt32(number, answer, pos) THEN
+			IF isNegative THEN
+				IF (AO.ULeq32(answer, AO.TOUNSIGNED32((MIN(AO.SIGNED32))))) THEN
+					value := (-AO.TOSIGNED32(answer));
+					RETURN TRUE
+				ELSE
+					value := MIN(AO.SIGNED32)
+				END
+			ELSE
+				IF (AO.ULeq32(answer, AO.TOUNSIGNED32((MAX(AO.SIGNED32))))) THEN
+					value := AO.TOSIGNED32(answer);
+					RETURN TRUE
+				ELSE
+					value := MAX(AO.SIGNED32)
+				END
+			END
+		END;
+		RETURN FALSE
+	END TryParseInt32;
+
+	PROCEDURE TryParseUInt64* (IN number : ARRAY OF SHORTCHAR; VAR value : AO.UNSIGNED64; pos : AO.SIZE): BOOLEAN;
+		VAR
+			len: AO.SIZE;
+			answer: AO.UNSIGNED64;
+			base, d: AO.SIGNED32;
+			c: SHORTCHAR;
+			try: AO.UNSIGNED64;
+
+
+	BEGIN
+		d := 0;
+		base := radix10;
+		answer := AO.TOUNSIGNED64(0);
+		len := LEN(number);
+		pos := 0;
+		IF (number[pos] = '0') & (pos + 2 <= len) THEN
+			c := number[pos + 1];
+			IF c = 'b' THEN
+				INC(pos, 2);
+				base := 2
+			ELSIF c = 'o' THEN
+				INC(pos, 2);
+				base := 8
+			ELSIF (c = 'x') OR (c = 'u') THEN
+				INC(pos, 2);
+				base := 16
+			END
+		END;
+		IF (pos >= len) OR ~IsDigit(number[pos], (*WARN CONV CAST*)AO.TOUNSIGNED32(base), d) THEN
+			value := (*WARN CONV CAST*)AO.TOUNSIGNED64(0);
+			RETURN FALSE
+		END;
+		answer := (*WARN CONV CAST*)AO.TOUNSIGNED64(d);
+		INC(pos);
+		WHILE (pos < len) & IsDigit(number[pos], (*WARN CONV CAST*)AO.TOUNSIGNED32(base), d) DO
+			IF AO.UGtr64(answer, AO.UDiv64(AO.MAX_UNSIGNED64() , AO.LONG32(AO.TOUNSIGNED32(base)))) THEN
+				value := AO.MAX_UNSIGNED64();
+				RETURN FALSE
+			END;
+			answer := (*WARN CONV CAST*)(AO.UMul64(answer, AO.LONG32(AO.TOUNSIGNED32(base))));
+			try := AO.UAdd64(answer, AO.TOUNSIGNED64(d));
+			IF AO.ULss64(try, answer) THEN
+				value := AO.MAX_UNSIGNED64();
+				RETURN FALSE
+			END;
+			answer := try;
+			INC(pos)
+		END;
+		value := answer;
+		RETURN TRUE
+	END TryParseUInt64;
+
+	PROCEDURE TryParseInt64* (IN number : ARRAY OF SHORTCHAR; VAR value : AO.SIGNED64; pos : AO.SIZE): BOOLEAN;
+		VAR
+			answer: AO.UNSIGNED64;
+			isNegative: BOOLEAN;
+
+
+	BEGIN
+		isNegative := number[pos] = "-";
+		answer := AO.TOUNSIGNED64(0);
+		pos := 0;
+		IF isNegative OR (number[pos] = "+") THEN
+			INC(pos)
+		END;
+		value := (*WARN CONV CAST*)LONG(0);
+		IF TryParseUInt64(number, answer, pos) THEN
+			IF isNegative THEN
+				IF (AO.ULeq64(answer, AO.TOUNSIGNED64((MIN(AO.SIGNED64))))) THEN
+					value := (-AO.TOSIGNED64(answer));
+					RETURN TRUE
+				ELSE
+					value := MIN(AO.SIGNED64)
+				END
+			ELSE
+				IF (AO.ULeq64(answer, AO.TOUNSIGNED64((MAX(AO.SIGNED64))))) THEN
+					value := AO.TOSIGNED64(answer);
+					RETURN TRUE
+				ELSE
+					value := MAX(AO.SIGNED64)
+				END
+			END
+		END;
+		RETURN FALSE
+	END TryParseInt64;
+
+	PROCEDURE TryParseAddress* (IN number : ARRAY OF SHORTCHAR; VAR value : AO.ADDRESS; pos : AO.SIZE): BOOLEAN;
+		VAR
+			len: AO.SIZE;
+			answer: AO.ADDRESS;
+			base, d: AO.SIGNED32;
+			c: SHORTCHAR;
+			try: AO.ADDRESS;
+
+
+	BEGIN
+		d := 0;
+		base := radix10;
+		answer := 0;
+		len := LEN(number);
+		pos := 0;
+		IF (number[pos] = '0') & (pos + 2 <= len) THEN
+			c := number[pos + 1];
+			IF c = 'b' THEN
+				INC(pos, 2);
+				base := 2
+			ELSIF c = 'o' THEN
+				INC(pos, 2);
+				base := 8
+			ELSIF (c = 'x') OR (c = 'u') THEN
+				INC(pos, 2);
+				base := 16
+			END
+		END;
+		IF (pos >= len) OR ~IsDigit(number[pos], (*WARN CONV CAST*)AO.TOUNSIGNED32(base), d) THEN
+			value := 0;
+			RETURN FALSE
+		END;
+		answer := d;
+		INC(pos);
+		WHILE (pos < len) & IsDigit(number[pos], (*WARN CONV CAST*)AO.TOUNSIGNED32(base), d) DO
+			IF answer > MAX(AO.ADDRESS) DIV base THEN
+				value := MAX(AO.ADDRESS);
+				RETURN FALSE
+			END;
+			answer := answer * base;
+			try := answer + (d);
+			IF try < answer THEN
+				value := MAX(AO.ADDRESS);
+				RETURN FALSE
+			END;
+			answer := try;
+			INC(pos)
+		END;
+		value := answer;
+		RETURN TRUE
+	END TryParseAddress;
+
+	PROCEDURE TryParseSize* (IN number : ARRAY OF SHORTCHAR; VAR value : AO.SIZE; pos : AO.SIZE): BOOLEAN;
+		VAR
+			answer: AO.ADDRESS;
+			isNegative: BOOLEAN;
+
+
+	BEGIN
+		isNegative := number[pos] = "-";
+		answer := 0;
+		pos := 0;
+		IF isNegative OR (number[pos] = "+") THEN
+			INC(pos)
+		END;
+		value := 0;
+		IF TryParseAddress(number, answer, pos) THEN
+			IF isNegative THEN
+				IF (answer <= (MIN(AO.SIZE))) THEN
+					value := SHORT(-(answer));	(* 64-bit: ADDRESS=LONGINT -> SIZE=INTEGER *)
+					RETURN TRUE
+				ELSE
+					value := MIN(AO.SIZE)
+				END
+			ELSE
+				IF (answer <= (MAX(AO.SIZE))) THEN
+					value := SHORT(answer);
+					RETURN TRUE
+				ELSE
+					value := MAX(AO.SIZE)
+				END
+			END
+		END;
+		RETURN FALSE
+	END TryParseSize;
+
+
+
+
+
+
+
+	PROCEDURE StrToInt32* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.SIGNED32);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		i := 0;
+		val := 0;
+		WHILE (i < LEN(str)) & (str[i] # 0X) & (str[i] <= " ") DO
+			INC(i)
+		END;
+		IF (i < LEN(str)) & (str[i] # 0X) THEN
+			ASSERT(TryParseInt32(str, val, i))
+		END
+	END StrToInt32;
+
+	PROCEDURE StrToInt* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.SIGNED32);
+
+	BEGIN
+		StrToInt32(str, val)
+	END StrToInt;
+
+	PROCEDURE StrToUInt32* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.UNSIGNED32);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		i := 0;
+		val := AO.TOUNSIGNED32(0);
+		WHILE (str[i] # 0X) & (str[i] <= " ") DO
+			INC(i)
+		END;
+		IF (i < LEN(str)) & (str[i] # 0X) THEN
+			ASSERT(TryParseUInt32(str, val, i))
+		END
+	END StrToUInt32;
+
+	PROCEDURE StrToInt64* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.SIGNED64);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		i := 0;
+		val := (*WARN CONV CAST*)LONG(0);
+		WHILE (i < LEN(str)) & (str[i] # 0X) & (str[i] <= " ") DO
+			INC(i)
+		END;
+		IF (i < LEN(str)) & (str[i] # 0X) THEN
+			ASSERT(TryParseInt64(str, val, i))
+		END
+	END StrToInt64;
+
+	PROCEDURE StrToHInt* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.SIGNED64);
+
+	BEGIN
+		StrToInt64(str, val)
+	END StrToHInt;
+
+	PROCEDURE StrToUInt64* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.UNSIGNED64);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		i := 0;
+		val := (*WARN CONV CAST*)AO.TOUNSIGNED64(LONG(0));
+		WHILE (i < LEN(str)) & (str[i] # 0X) & (str[i] <= " ") DO
+			INC(i)
+		END;
+		IF (i < LEN(str)) & (str[i] # 0X) THEN
+			ASSERT(TryParseUInt64(str, val, i))
+		END
+	END StrToUInt64;
+
+	PROCEDURE StrToSize* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		i := 0;
+		val := 0;
+		WHILE (i < LEN(str)) & (str[i] # 0X) & (str[i] <= " ") DO
+			INC(i)
+		END;
+		IF (i < LEN(str)) & (str[i] # 0X) THEN
+			ASSERT(TryParseSize(str, val, i))
+		END
+	END StrToSize;
+
+	PROCEDURE StrToIntPos* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.SIGNED32; VAR i : AO.SIZE);
+		VAR
+			noStr: ARRAY 16 OF SHORTCHAR;
+
+
+	BEGIN
+		WHILE (str[i] # 0X) & (str[i] <= " ") DO
+			INC(i)
+		END;
+		val := 0;
+		IF str[i] = "-" THEN
+			noStr[val] := str[i];
+			INC(val);
+			INC(i);
+			WHILE (str[i] # 0X) & (str[i] <= " ") DO
+				INC(i)
+			END
+		END;
+		WHILE (str[i] >= "0") & (str[i] <= "9") DO
+			noStr[val] := str[i];
+			INC(val);
+			INC(i)
+		END;
+		noStr[val] := 0X;
+		StrToInt32(noStr, val)
+	END StrToIntPos;
+
+	PROCEDURE StrToHIntPos* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.SIGNED64; VAR i : AO.SIZE);
+		VAR
+			noStr: ARRAY 32 OF SHORTCHAR;
+
+
+	BEGIN
+		WHILE (str[i] # 0X) & (str[i] <= " ") DO
+			INC(i)
+		END;
+		val := (*WARN CONV CAST*)LONG(0);
+		IF str[i] = "-" THEN
+			noStr[val] := str[i];
+			INC(val);
+			INC(i);
+			WHILE (str[i] # 0X) & (str[i] <= " ") DO
+				INC(i)
+			END
+		END;
+		WHILE (str[i] >= "0") & (str[i] <= "9") DO
+			noStr[val] := str[i];
+			INC(val);
+			INC(i)
+		END;
+		noStr[val] := 0X;
+		StrToInt64(noStr, val)
+	END StrToHIntPos;
+
+	PROCEDURE StrToSizePos* (IN str : ARRAY OF SHORTCHAR; VAR val : AO.SIZE; VAR i : AO.SIZE);
+		VAR
+			noStr: ARRAY 32 OF SHORTCHAR;
+
+
+	BEGIN
+		WHILE (str[i] # 0X) & (str[i] <= " ") DO
+			INC(i)
+		END;
+		val := 0;
+		IF str[i] = "-" THEN
+			noStr[val] := str[i];
+			INC(val);
+			INC(i);
+			WHILE (str[i] # 0X) & (str[i] <= " ") DO
+				INC(i)
+			END
+		END;
+		WHILE (str[i] >= "0") & (str[i] <= "9") DO
+			noStr[val] := str[i];
+			INC(val);
+			INC(i)
+		END;
+		noStr[val] := 0X;
+		StrToSize(noStr, val)
+	END StrToSizePos;
+
+	PROCEDURE UIntToHexStr* (h : AO.UNSIGNED64; width : INTEGER; VAR s : ARRAY OF SHORTCHAR);
+
+			
+
+				VAR i : INTEGER;
+						hexDigits : ARRAY 17 OF SHORTCHAR;
+
+	BEGIN
+				hexDigits := "0123456789ABCDEF";
+		IF (width <= 0) THEN
+			width := 8
+		END;
+		s[width] := 0X;
+		DEC(width);
+		WHILE (width >= 0) DO
+						i := SHORT(AO.TOSIGNED64(AO.UMod64(h, AO.TOUNSIGNED64(16))));
+			s[width] := (hexDigits[i]);
+			h := AO.ULSH64(h, (-4));
+			DEC(width)
+		END
+	END UIntToHexStr;
+
+	PROCEDURE IntToHexStr* (h : AO.SIGNED64; width : INTEGER; VAR s : ARRAY OF SHORTCHAR);
+
+	BEGIN
+		UIntToHexStr(AO.TOUNSIGNED64(h), width, s)
+	END IntToHexStr;
+
+
+
+	PROCEDURE HexStrToInt* (IN string : ARRAY OF SHORTCHAR; VAR val : AO.SIGNED32; VAR res : INTEGER);
+		VAR
+			length, i: AO.SIZE;
+			answer: AO.UNSIGNED32;
+			negative: BOOLEAN;
+
+
+	BEGIN
+		negative := FALSE;
+		i := 0;
+		length := LEN(string);
+		val := 0;
+		res := (-1);
+		WHILE (i < length) & (string[i] # 0X) & (string[i] <= " ") DO
+			INC(i)
+		END;
+		IF (i < length) THEN
+			IF (string[i] = "+") OR (string[i] = "-") THEN
+				negative := (string[i] = "-");
+				INC(i)
+			END;
+			ASSERT(TryScanUInt32At(i, string, (*WARN CONV CAST*)AO.TOUNSIGNED32(radix16), answer, res));
+			IF negative THEN
+				val := (-AO.TOSIGNED32(answer))
+			ELSE
+				val := AO.TOSIGNED32(answer)
+			END
+		END
+	END HexStrToInt;
+
+	PROCEDURE HexStrToInt32* (IN string : ARRAY OF SHORTCHAR; VAR val : AO.SIGNED32; VAR res : INTEGER);
+
+	BEGIN
+		HexStrToInt(string, val, res)
+	END HexStrToInt32;
+
+	PROCEDURE HexStrToUInt32* (IN string : ARRAY OF SHORTCHAR; VAR val : AO.UNSIGNED32; VAR res : INTEGER);
+		VAR
+			length, i: AO.SIZE;
+	BEGIN
+		i := 0;
+		length := LEN(string);
+		val := (*WARN CONV CAST*)AO.TOUNSIGNED32(0);
+		res := (-1);
+		WHILE (i < length) & (string[i] # 0X) & (string[i] <= " ") DO
+			INC(i)
+		END;
+		IF (i < length) THEN
+			ASSERT(TryScanUInt32At(i, string, (*WARN CONV CAST*)AO.TOUNSIGNED32(radix16), val, res))
+		END
+	END HexStrToUInt32;
+
+	PROCEDURE HexStrToSize* (IN string : ARRAY OF SHORTCHAR; VAR val : AO.SIZE; VAR res : INTEGER);
+		VAR
+			length, i: AO.SIZE;
+			ch: SHORTCHAR;
+
+
+	BEGIN
+		length := LEN(string);
+		val := 0;
+		res := (-1);
+		i := 0;
+		WHILE (i < length) & (string[i] # 0X) & (string[i] <= " ") DO
+			INC(i)
+		END;
+		IF (i < length) THEN
+			LOOP
+				IF (i >= length) OR (string[i] = 0X) THEN
+					EXIT
+				END;
+				ch := string[i];
+				IF (ch >= "0") & (ch <= "9") THEN
+					val := 16 * val + ORD(ch) - ORD("0")
+				ELSIF (CAP(ch) >= "A") & (CAP(ch) <= "F") THEN
+					val := 16 * val + ORD(CAP(ch)) - ORD("A") + 10
+				ELSE
+					EXIT
+				END;
+				INC(i)
+			END;
+			IF (i < length) & (string[i] = "H") THEN
+				INC(i)
+			END;
+			IF (i < length) & (string[i] = 0X) THEN
+				res := Ok
+			END
+		END
+	END HexStrToSize;
+
+	PROCEDURE FloatToStr* (x : AO.FLOAT64; n, f, D : AO.SIGNED32; VAR str : ARRAY OF SHORTCHAR);
+
+	BEGIN
+		RC.RealToStringFix(x, n, f, D, str)
+	END FloatToStr;
+
+	PROCEDURE AddressToStr* (adr : AO.ADDRESS; VAR str : ARRAY OF SHORTCHAR);
+
+	BEGIN
+		IntToHexStr(adr, 2 * SIZE(AO.ADDRESS), str)
+	END AddressToStr;
+
+	PROCEDURE StrToFloat* (IN s : ARRAY OF SHORTCHAR; VAR r : AO.FLOAT64);
+
+	BEGIN
+		ASSERT(RC.StringToReal(s, r))
+	END StrToFloat;
+
+	PROCEDURE SetToStr* (set : SET; VAR s : ARRAY OF SHORTCHAR);
+		VAR
+			i, j, k: AO.SIGNED16;
+			noFirst: BOOLEAN;
+
+
+	BEGIN
+		s[0] := "{";
+		i := (*WARN CONV CAST*)SHORT(0);
+		k := (*WARN CONV CAST*)SHORT(1);
+		noFirst := FALSE;
+		WHILE i <= MAX(SET) DO
+			IF i IN set THEN
+				IF noFirst THEN
+					s[k] := ",";
+					INC(k)
+				ELSE
+					noFirst := TRUE
+				END;
+				IF i >= 10 THEN
+					s[k] := (*WARN CONV CAST*)SHORT(CHR(i DIV 10 + 30H));
+					INC(k)
+				END;
+				s[k] := (*WARN CONV CAST*)SHORT(CHR(i MOD 10 + 30H));
+				INC(k);
+				j := i;
+				INC(i);
+				WHILE (i <= MAX(SET)) & (i IN set) DO
+					INC(i)
+				END;
+				IF i - 2 > j THEN
+					s[k] := ".";
+					s[k + 1] := ".";
+					INC(k, 2);
+					j := (*WARN CONV CAST*)SHORT(i - 1);
+					IF j >= 10 THEN
+						s[k] := (*WARN CONV CAST*)SHORT(CHR(j DIV 10 + 30H));
+						INC(k)
+					END;
+					s[k] := (*WARN CONV CAST*)SHORT(CHR(j MOD 10 + 30H));
+					INC(k)
+				ELSE
+					i := j
+				END
+			END;
+			INC(i)
+		END;
+		s[k] := "}";
+		s[k + 1] := 0X
+	END SetToStr;
+
+	PROCEDURE StrToSet* (IN str : ARRAY OF SHORTCHAR; VAR set : SET);
+		VAR
+			i, d, d1: AO.SIGNED16;
+			dot: BOOLEAN;
+
+
+	BEGIN
+		set := {};
+		dot := FALSE;
+		i := (*WARN CONV CAST*)SHORT(0);
+		WHILE (str[i] # 0X) & (str[i] # "}") DO
+			WHILE (str[i] # 0X) & ((str[i] < "0") OR ("9" < str[i])) DO
+				INC(i)
+			END;
+			d := (*WARN CONV CAST*)SHORT(0);
+			WHILE ("0" <= str[i]) & (str[i] <= "9") DO
+				d := SHORT(d * 10 + ORD(str[i]) - 30H);
+				INC(i)
+			END;
+			IF (str[i] = 0X) THEN
+				RETURN
+			END;
+			IF d <= MAX(SET) THEN
+				INCL(set, d)
+			END;
+			IF dot THEN
+				WHILE (d1 <= MAX(SET)) & (d1 < d) DO
+					INCL(set, d1);
+					INC(d1)
+				END;
+				dot := FALSE
+			END;
+			WHILE (str[i] = " ") DO
+				INC(i)
+			END;
+			IF (str[i] = ".") THEN
+				d1 := (*WARN CONV CAST*)SHORT(d + 1);
+				dot := TRUE
+			END
+		END
+	END StrToSet;
+
+	PROCEDURE NewString* (IN str : ARRAY OF SHORTCHAR): String;
+		VAR
+			l: AO.SIZE;
+			s: String;
+
+
+	BEGIN
+		l := Length(str) + 1;
+		NEW(s, l);
+		AO.COPY(str, s^);
+		RETURN s
+	END NewString;
+
+	PROCEDURE SetAOC* (IN str : ARRAY OF SHORTCHAR; VAR s : String);
+		VAR
+			l: AO.SIZE;
+
+
+	BEGIN
+		l := Length(str) + 1;
+		IF (s = NIL) OR (LEN(s^) < l) THEN
+			NEW(s, l)
+		END;
+		AO.COPY(str, s^)
+	END SetAOC;
+
+	PROCEDURE GetExtension* (IN name : ARRAY OF SHORTCHAR; VAR file, ext : ARRAY OF SHORTCHAR);
+		VAR
+			len, index: AO.SIZE;
+
+
+	BEGIN
+		len := Length(name);
+		index := len;
+		WHILE (index # 0) & (name[index - 1] # '.') DO
+			DEC(index)
+		END;
+		IF index = 0 THEN
+			Copy(name, 0, len, file);
+			Truncate(ext, 0)
+		ELSE
+			Copy(name, 0, index - 1, file);
+			Copy(name, index, len - index, ext)
+		END
+	END GetExtension;
+
+	PROCEDURE ConcatToNew* (IN s1, s2 : ARRAY OF SHORTCHAR): String;
+		VAR
+			s: String;
+
+
+	BEGIN
+		NEW(s, Length(s1) + Length(s2) + 1);
+		Concat(s1, s2, s^);
+		RETURN s
+	END ConcatToNew;
+	PROCEDURE StartsWith* (IN prefix : ARRAY OF SHORTCHAR; toffset : AO.SIZE; IN s : ARRAY OF SHORTCHAR): BOOLEAN;
+		VAR
+			lenString, lenPrefix, i: AO.SIZE;
+
+
+	BEGIN
+		lenString := Length(s);
+		lenPrefix := Length(prefix);
+		IF (toffset < 0) OR (toffset > lenString - lenPrefix) THEN
+			RETURN FALSE
+		END;
+		FOR i := 0 TO lenPrefix - 1 DO
+			IF prefix[i] # s[toffset + i] THEN
+				RETURN FALSE
+			END
+		END;
+		RETURN TRUE
+	END StartsWith;
+
+	PROCEDURE EndsWith* (IN suffix, s : ARRAY OF SHORTCHAR): BOOLEAN;
+
+	BEGIN
+		RETURN StartsWith(suffix, Length(s) - Length(suffix), s)
+	END EndsWith;
+
+	PROCEDURE Equal* (s1, s2 : String): BOOLEAN;
+
+	BEGIN
+		ASSERT(s1 # NIL);
+		ASSERT(s2 # NIL);
+		RETURN s1^ = s2^
+	END Equal;
+
+	PROCEDURE ContainsChar* (IN string : ARRAY OF SHORTCHAR; ch : SHORTCHAR; ignoreCase : BOOLEAN): BOOLEAN;
+
+	BEGIN
+		IF ignoreCase THEN
+			RETURN (Find(string, 0, LOW(ch)) # (-1)) & (Find(string, 0, UP(ch)) # (-1))
+		ELSE
+			RETURN Find(string, 0, ch) # (-1)
+		END
+	END ContainsChar;
+
+	PROCEDURE IndexOfByte* (ch : SHORTCHAR; fromIndex : AO.SIZE; IN s : ARRAY OF SHORTCHAR): AO.SIZE;
+		VAR
+			lenString, i: AO.SIZE;
+
+
+	BEGIN
+		lenString := Length(s);
+		IF fromIndex < 0 THEN
+			fromIndex := 0
+		ELSIF fromIndex >= lenString THEN
+			RETURN (-1)
+		END;
+		FOR i := fromIndex TO lenString - 1 DO
+			IF s[i] = ch THEN
+				RETURN i
+			END
+		END;
+		RETURN (-1)
+	END IndexOfByte;
+
+	PROCEDURE IndexOfByte2* (ch : SHORTCHAR; IN s : ARRAY OF SHORTCHAR): AO.SIZE;
+
+	BEGIN
+		RETURN IndexOfByte(ch, 0, s)
+	END IndexOfByte2;
+
+	PROCEDURE LastIndexOfByte* (ch : SHORTCHAR; fromIndex : AO.SIZE; IN s : ARRAY OF SHORTCHAR): AO.SIZE;
+		VAR
+			lenString, i: AO.SIZE;
+
+
+	BEGIN
+		lenString := Length(s);
+		IF fromIndex >= lenString THEN
+			fromIndex := lenString - 1
+		END;
+		FOR i := fromIndex TO 0 BY (-1) DO
+			IF s[i] = ch THEN
+				RETURN i
+			END
+		END;
+		RETURN (-1)
+	END LastIndexOfByte;
+
+
+	PROCEDURE LastIndexOfByte2* (ch : SHORTCHAR; IN s : ARRAY OF SHORTCHAR): AO.SIZE;
+
+	BEGIN
+		RETURN LastIndexOfByte(ch, Length(s) - 1, s)
+	END LastIndexOfByte2;
+
+
+	PROCEDURE LowerCaseInNew* (IN s : ARRAY OF SHORTCHAR): String;
+		VAR
+			n: String;
+
+
+	BEGIN
+		n := NewString(s);
+		LowerCase(n^);
+		RETURN n
+	END LowerCaseInNew;
+
+
+
+	PROCEDURE StartsWith2* (IN prefix, s : ARRAY OF SHORTCHAR): BOOLEAN;
+
+	BEGIN
+		RETURN StartsWith(prefix, 0, s)
+	END StartsWith2;
+
+	PROCEDURE Substring* (beginIndex : AO.SIZE; endIndex : AO.SIZE; IN s : ARRAY OF SHORTCHAR): String;
+		VAR
+			lenString, lenNewString: AO.SIZE;
+			st: String;
+
+
+	BEGIN
+		ASSERT(beginIndex >= 0);
+		lenString := Length(s);
+		ASSERT(endIndex <= lenString);
+		lenNewString := endIndex - beginIndex;
+		ASSERT(lenNewString >= 0);
+		NEW(st, lenNewString + 1);
+		Copy(s, beginIndex, lenNewString, st^);
+		RETURN st
+	END Substring;
+
+	PROCEDURE Substring2* (beginIndex : AO.SIZE; IN s : ARRAY OF SHORTCHAR): String;
+
+	BEGIN
+		RETURN Substring(beginIndex, Length(s), s)
+	END Substring2;
+
+
+
+	PROCEDURE TrimWS* (VAR s : ARRAY OF SHORTCHAR);
+		VAR
+			len, start, i: AO.SIZE;
+
+
+	BEGIN
+		len := Length(s);
+		start := 0;
+		WHILE (start < len) & (ORD(s[start]) < 33) DO
+			INC(start)
+		END;
+		WHILE (start < len) & (ORD(s[len - 1]) < 33) DO
+			DEC(len)
+		END;
+		IF start > 0 THEN
+			FOR i := 0 TO len - start - 1 DO
+				s[i] := s[start + i]
+			END;
+			s[i] := 0X
+		ELSE
+			s[len] := 0X
+		END
+	END TrimWS;
+
+	PROCEDURE UpperCaseInNew* (IN s : ARRAY OF SHORTCHAR): String;
+		VAR
+			n: String;
+
+
+	BEGIN
+		n := NewString(s);
+		UpperCase(n^);
+		RETURN n
+	END UpperCaseInNew;
+
+
+	PROCEDURE IsDecimal* (c : SHORTCHAR; VAR d : AO.SIGNED32): BOOLEAN;
+		VAR
+			t: AO.UNSIGNED32;
+
+
+	BEGIN
+		t := AO.TOUNSIGNED32(ORD(c) - ORD('0'));
+		IF AO.ULss32(t, AO.TOUNSIGNED32(radix10)) THEN
+			d := AO.TOSIGNED32(t);
+			RETURN TRUE
+		END;
+		RETURN FALSE
+	END IsDecimal;
+
+	PROCEDURE IsHexadecimal* (c : SHORTCHAR; VAR d : AO.SIGNED32): BOOLEAN;
+		VAR
+			t: AO.UNSIGNED32;
+
+
+	BEGIN
+		t := AO.TOUNSIGNED32(ORD(c) - ORD('0'));
+		IF AO.UGeq32(t, AO.TOUNSIGNED32(radix10)) THEN
+			t := AO.TOUNSIGNED32(ORD(CAP(c)) - ORD('A') + 10);
+			IF AO.UGeq32(t, AO.TOUNSIGNED32(radix16)) THEN
+				RETURN FALSE
+			END
+		END;
+		d := AO.TOSIGNED32(t);
+		RETURN TRUE
+	END IsHexadecimal;
+
+END CryptoAosStrings.

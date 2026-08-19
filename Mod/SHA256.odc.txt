@@ -1,0 +1,238 @@
+MODULE CryptoSHA256;
+	
+	(** AUTHOR "GF"; PURPOSE "SHA2-256"; *)
+
+	IMPORT Hashes := CryptoHashes, U := CryptoUtils, AO := CryptoAosCompat, SYSTEM;
+
+	CONST
+		BlockSize* = 64;
+		HashSize* = 32;
+
+	VAR
+		K256: ARRAY BlockSize OF AO.SIGNED32;
+
+	TYPE
+		SHA256* = RECORD
+			hash : ARRAY 8 OF AO.SIGNED32;
+			bitlen : AO.SIGNED64;
+			cdata : ARRAY BlockSize OF SHORTCHAR;
+			cn : AO.SIZE
+		END;
+
+	TYPE
+		Hash* = POINTER TO EXTENSIBLE RECORD(Hashes.Hash)
+			hash : SHA256
+		END;
+
+	PROCEDURE (VAR SELF: SHA256) Initialize* , NEW;
+	BEGIN
+		SELF.hash[0] := (6A09E667H);
+		SELF.hash[1] := (0BB67AE85H);
+		SELF.hash[2] := (3C6EF372H);
+		SELF.hash[3] := (0A54FF53AH);
+		SELF.hash[4] := (510E527FH);
+		SELF.hash[5] := (09B05688CH);
+		SELF.hash[6] := (1F83D9ABH);
+		SELF.hash[7] := (05BE0CD19H);
+		SELF.bitlen := 0;
+		SELF.cn := 0
+	END Initialize;
+
+	PROCEDURE Sigma0Maj (x, y, z : SET): AO.SIGNED32;
+		VAR a, b: SET;
+	BEGIN
+		a := SYSTEM.ROT(x, 30) / SYSTEM.ROT(x, 19) / SYSTEM.ROT(x, 10);
+		b := (x * y) / (x * z) / (y * z);
+		RETURN ORD(a) + ORD(b)
+	END Sigma0Maj;
+
+	PROCEDURE Sigma1Ch (x, y, z : SET): AO.SIGNED32;
+		VAR a, b: SET;
+	BEGIN
+		a := SYSTEM.ROT(x, 26) / SYSTEM.ROT(x, 21) / SYSTEM.ROT(x, 7);
+		b := (x * y) / (((-x)) * z);
+		RETURN ORD(a) + ORD(b)
+	END Sigma1Ch;
+
+	PROCEDURE sigma0 (x : SET): AO.SIGNED32;
+	BEGIN
+		RETURN ORD(SYSTEM.ROT(x, 25) / SYSTEM.ROT(x, 14) / SYSTEM.LSH(x, (-3)))
+	END sigma0;
+
+	PROCEDURE sigma1 (x : SET): AO.SIGNED32;
+	BEGIN
+		RETURN ORD(SYSTEM.ROT(x, 15) / SYSTEM.ROT(x, 13) / SYSTEM.LSH(x, (-10)))
+	END sigma1;
+
+	PROCEDURE (VAR SELF: SHA256) HashBlock (IN data : ARRAY OF SHORTCHAR; pos : AO.SIZE), NEW;
+		VAR
+			a, b, c, d, e, f, g, h, s0, s1, s, T1, T2, i: AO.SIGNED32;
+			X: ARRAY 16 OF AO.SIGNED32;
+	BEGIN
+		a := SELF.hash[0];
+		b := SELF.hash[1];
+		c := SELF.hash[2];
+		d := SELF.hash[3];
+		e := SELF.hash[4];
+		f := SELF.hash[5];
+		g := SELF.hash[6];
+		h := SELF.hash[7];
+
+		FOR i := 0 TO BlockSize - 1 DO
+			IF i < 16 THEN
+				X[i] := U.IntFromBufferBE(data, pos + 4 * i)
+			ELSE
+				s0 := sigma0(BITS(X[(i + 1) MOD 16]));
+				s1 := sigma1(BITS(X[(i + 14) MOD 16]));
+				s := s0 + s1 + X[(i + 9) MOD 16];
+				INC(X[i MOD 16], s)
+			END;
+			T1 := X[i MOD 16] + h + Sigma1Ch(BITS(e), BITS(f), BITS(g)) + K256[i];
+			T2 := Sigma0Maj(BITS(a), BITS(b), BITS(c));
+			h := g;
+			g := f;
+			f := e;
+			e := d + T1;
+			d := c;
+			c := b;
+			b := a;
+			a := T1 + T2
+		END;
+		INC(SELF.hash[0], a);
+		INC(SELF.hash[1], b);
+		INC(SELF.hash[2], c);
+		INC(SELF.hash[3], d);
+		INC(SELF.hash[4], e);
+		INC(SELF.hash[5], f);
+		INC(SELF.hash[6], g);
+		INC(SELF.hash[7], h);
+		SELF.cn := 0
+	END HashBlock;
+
+	PROCEDURE (VAR SELF: SHA256) OPERATORBRACKETS* (IN data : ARRAY OF SHORTCHAR; pos, len : AO.SIZE), NEW;
+		VAR
+			i,n: AO.SIZE;
+	BEGIN
+		ASSERT(SELF.cn >= 0);
+		INC(SELF.bitlen, len * 8);
+
+		IF SELF.cn > 0 THEN
+			IF SELF.cn + len < BlockSize THEN
+				i := SELF.cn;
+				INC(SELF.cn, len);
+				WHILE i < SELF.cn DO
+					SELF.cdata[i] := data[pos];
+					INC(i);
+					INC(pos)
+				END;
+				RETURN
+			ELSE
+				WHILE SELF.cn < BlockSize DO
+					SELF.cdata[SELF.cn] := data[pos];
+					INC(SELF.cn);
+					INC(pos);
+					DEC(len)
+				END;
+				SELF.HashBlock(SELF.cdata, 0)
+			END
+		END;
+
+		n := 0;
+		WHILE n < len DIV BlockSize DO
+			SELF.HashBlock(data, pos);
+			INC(n);
+			INC(pos, BlockSize)
+		END;
+		len := len MOD BlockSize;
+		WHILE SELF.cn < len DO
+			SELF.cdata[SELF.cn] := data[pos];
+			INC(SELF.cn);
+			INC(pos)
+		END
+	END OPERATORBRACKETS;
+
+	PROCEDURE (VAR SELF: SHA256) GetHash* (VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE), NEW;
+		VAR p, i: AO.SIGNED32;
+	BEGIN
+		ASSERT(SELF.cn < BlockSize);
+		SELF.cdata[SELF.cn] := 80X;
+		INC(SELF.cn);
+		IF SELF.cn > BlockSize - 8 THEN
+			WHILE SELF.cn < BlockSize DO
+				SELF.cdata[SELF.cn] := 0X;
+				INC(SELF.cn)
+			END;
+			SELF.HashBlock(SELF.cdata, 0)
+		END;
+		p := BlockSize - 8;
+		WHILE SELF.cn < p DO
+			SELF.cdata[SELF.cn] := 0X;
+			INC(SELF.cn)
+		END;
+		U.IntToBufferBE(AO.SHORTHIGH64Raw(SELF.bitlen), SELF.cdata, p);
+		U.IntToBufferBE(AO.SHORT64Raw(SELF.bitlen), SELF.cdata, p + 4);
+		SELF.HashBlock(SELF.cdata, 0);
+		FOR i := 0 TO 7 DO
+			U.IntToBufferBE(SELF.hash[i], buf, pos);
+			INC(pos, 4)
+		END
+	END GetHash;
+
+	PROCEDURE (SELF: Hash) Init* ;
+	BEGIN
+		SELF.SetNameAndSize("sha2-256", HashSize);
+		SELF.initialized := FALSE
+	END Init;
+
+	PROCEDURE (SELF: Hash) Initialize* ;
+	BEGIN
+		SELF.hash.Initialize;
+		SELF.initialized := TRUE
+	END Initialize;
+
+	PROCEDURE (SELF: Hash) Update* (IN data : ARRAY OF SHORTCHAR; pos, len : AO.SIZE);
+	BEGIN
+		ASSERT(SELF.initialized);
+		SELF.hash.OPERATORBRACKETS(data, pos, len)
+	END Update;
+
+	PROCEDURE (SELF: Hash) GetHash* (VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+	BEGIN
+		SELF.hash.GetHash(buf, pos)
+	END GetHash;
+
+	PROCEDURE NewHash* (): Hashes.Hash;
+		VAR h: Hash;
+	BEGIN
+		NEW(h);h.Init();
+		RETURN h
+	END NewHash;
+
+	PROCEDURE InitializeK ;
+		VAR buf: U.InitBuffer; i: AO.SIGNED32;
+	BEGIN
+		NEW(buf); buf.Init(2048);
+		buf.Add("428A2F98 71374491 B5C0FBCF E9B5DBA5  ");
+		buf.Add("3956C25B 59F111F1 923F82A4 AB1C5ED5  ");
+		buf.Add("D807AA98 12835B01 243185BE 550C7DC3  ");
+		buf.Add("72BE5D74 80DEB1FE 9BDC06A7 C19BF174  ");
+		buf.Add("E49B69C1 EFBE4786 0FC19DC6 240CA1CC  ");
+		buf.Add("2DE92C6F 4A7484AA 5CB0A9DC 76F988DA  ");
+		buf.Add("983E5152 A831C66D B00327C8 BF597FC7  ");
+		buf.Add("C6E00BF3 D5A79147 06CA6351 14292967  ");
+		buf.Add("27B70A85 2E1B2138 4D2C6DFC 53380D13  ");
+		buf.Add("650A7354 766A0ABB 81C2C92E 92722C85  ");
+		buf.Add("A2BFE8A1 A81A664B C24B8B70 C76C51A3  ");
+		buf.Add("D192E819 D6990624 F40E3585 106AA070  ");
+		buf.Add("19A4C116 1E376C08 2748774C 34B0BCB5  ");
+		buf.Add("391C0CB3 4ED8AA4A 5B9CCA4F 682E6FF3  ");
+		buf.Add("748F82EE 78A5636F 84C87814 8CC70208  ");
+		buf.Add("90BEFFFA A4506CEB BEF9A3F7 C67178F2  ");
+		FOR i := 0 TO 63 DO
+			K256[i] := buf.GetInt()
+		END
+	END InitializeK;
+
+BEGIN
+	InitializeK
+END CryptoSHA256.

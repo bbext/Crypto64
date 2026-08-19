@@ -1,0 +1,167 @@
+MODULE CryptoX25519;
+
+(*Port from c#(https://github.com/HirbodBehnam/X25519-CSharp/) by Anton Shelin 2023*)
+(* https://www.rfc-editor.org/rfc/rfc7748 *)
+
+	IMPORT CryptoFieldElement, AO := CryptoAosCompat, fe := CryptoFieldElement, SYSTEM, bn := CryptoAosBigNumbers, StdLog, Rng := CryptoFortunaRng;
+
+	TYPE
+		X25519KeyPair* = RECORD
+			PrivateKey* : ARRAY 32 OF SHORTCHAR;
+			PublicKey* : ARRAY 32 OF SHORTCHAR;
+		END;
+		
+	VAR 
+		Basepoint : ARRAY 32 OF SHORTCHAR;
+
+		PROCEDURE ScalarMult(input, baseIn : ARRAY OF SHORTCHAR; OUT res : ARRAY OF SHORTCHAR);
+		VAR 
+			e : ARRAY 32 OF SHORTCHAR;
+			i, swap, pos:INTEGER;
+			b : SET;
+			x1, x2, z2, x3, z3, tmp0, tmp1 : fe.FieldElement;
+		BEGIN
+			FOR i:=0 TO 31 DO e[i] := input[i] END;
+			
+
+			e[0] := SHORT(CHR(ORD(BITS(ORD(e[0])) * BITS(248))));
+			e[31] := SHORT(CHR(ORD(BITS(ORD(e[31])) * BITS(127))));
+			e[31] := SHORT(CHR(ORD(BITS(ORD(e[31])) + BITS(64))));
+
+			
+			z2.Init();
+			(*// feFromBytes(&x1, base)*)
+			x1.InitFromBytes(baseIn); (*SECOND NUMBER*)
+			(*feOne(&x2) *)
+
+			x2.One(); 
+			(*//feCopy(&x3, &x1) *)
+			fe.Copy(x3,x1);
+			(*//feOne(&z3) *)
+			z3.One();
+
+			swap := 0;
+			
+			
+			FOR pos := 254 TO 0 BY -1 DO
+
+				b := BITS((SYSTEM.LSH(ORD(e[pos DIV 8]), -ORD(BITS(pos) * BITS(7)))));
+				b := b * BITS(1);
+				swap := ORD(BITS(swap) / b);
+				
+
+				fe.CSwap( x2, x3, swap);
+				
+				fe.CSwap( z2, z3, swap);
+				swap := ORD (b);
+
+				fe.Sub(x3, z3, tmp0);
+				fe.Sub(x2, z2, tmp1);
+				
+				fe.Add(x2, z2, x2);
+				fe.Add(x3, z3, z2);
+
+				tmp0.Multiply(x2, z3);
+
+				
+				z2.Multiply(tmp1, z2);
+
+				tmp1.Square(tmp0);
+
+				x2.Square(tmp1);
+
+				fe.Add(z3, z2, x3);
+				fe.Sub(z3, z2, z2);
+				tmp1.Multiply(tmp0, x2);
+				fe.Sub(tmp1, tmp0, tmp1);
+				z2.Square(z2);
+
+				tmp1.Mul121666(z3);
+				
+				x3.Square(x3);
+				fe.Add(tmp0, z3, tmp0);
+				x1.Multiply(z2, z3);
+				tmp1.Multiply(tmp0,z2);
+								
+			END;
+			
+			fe.CSwap(x2, x3, swap);
+			fe.CSwap(z2, z3, swap);
+
+			z2.Invert(z2);
+			x2.Multiply(z2, x2);
+			x2.ToBytes(res);
+		END ScalarMult;
+		(*/// <summary>
+		/// X25519 returns the result of the scalar multiplication (scalar * point),
+		/// according to RFC 7748, Section 5. scalar, point and the return value are
+		/// slices of 32 bytes.
+		///
+		/// If point is Basepoint (but not if it's a different slice with the same
+		/// contents) a precomputed implementation might be used for performance.
+		/// </summary>
+		/// <returns></returns> *)
+		PROCEDURE ScalarMultiplication*(scalar, point: ARRAY OF SHORTCHAR; OUT result : ARRAY OF SHORTCHAR);
+			VAR zero : ARRAY 32 OF SHORTCHAR;i:INTEGER;v:SET;
+		BEGIN
+			ASSERT (LEN(scalar) = 32);
+			ASSERT (LEN(point) = 32);
+			ASSERT (LEN(result) = 32);
+			FOR i:=0 TO 31 DO zero[i] := 0X END;
+
+			ScalarMult(scalar, point, result);
+			(* here I tried to make something like subtle.ConstantTimeCompare *)
+			ASSERT (LEN(result) = LEN(zero)) (*This should not happen. Because result is always 32 bytes*);
+			v := {};
+			FOR i := 0 TO 31 DO
+				v := (BITS(ORD(v)) + (BITS(ORD(zero[i])) / BITS(ORD(result[i]))));
+			END;
+			ASSERT (SYSTEM.LSH(ORD(v /{}) - 1, -31) # 1) (* no clue if these functions are ok or not
+				throw new Exception("bad input point: low order point"); *)
+
+		END ScalarMultiplication;
+
+
+	
+		PROCEDURE GenerateKeyPair*(OUT key : X25519KeyPair);
+		BEGIN
+			Rng.Generate(key.PrivateKey, 0, 32);
+
+			(* as defined in https://cr.yp.to/ecdh.html do these operation to finalize the private key *)
+			key.PrivateKey[0] := SHORT(CHR(ORD(BITS(ORD(key.PrivateKey[0])) * BITS(248))));
+			key.PrivateKey[31] := SHORT(CHR(ORD(BITS(ORD(key.PrivateKey[31])) * BITS(127))));
+			key.PrivateKey[31] := SHORT(CHR(ORD(BITS(ORD(key.PrivateKey[31])) + BITS(64))));
+
+			ScalarMultiplication(key.PrivateKey, Basepoint, key.PublicKey);
+		END GenerateKeyPair;
+
+		(*/// <summary>
+		/// Generates a full key pair (Public and private) given the private key
+		/// </summary>
+		/// <param name="privateKey">The private key to generate public key from</param>
+		/// <returns>A full key pair</returns> *)
+		PROCEDURE GenerateKeyFromPrivateKey*(privateKey : ARRAY OF SHORTCHAR; OUT key: X25519KeyPair);
+			VAR i: INTEGER;
+		BEGIN
+			ASSERT(LEN(privateKey) = 32);
+			FOR i := 0 TO 31 DO
+				key.PrivateKey[i] := privateKey[i];
+			END;
+			
+			ScalarMultiplication(key.PrivateKey, Basepoint, key.PublicKey);
+		END GenerateKeyFromPrivateKey;
+		(* <summary>
+		/// Generate a shared secret with the other users public key and your private key
+		/// </summary>
+		/// <param name="myPrivateKey">Your private key</param>
+		/// <param name="otherPublicKey">The public key of the other user</param>
+		/// <returns>A shared secret</returns> *)
+		PROCEDURE Agreement*(myPrivateKey, otherPublicKey: ARRAY OF SHORTCHAR; OUT res:ARRAY OF SHORTCHAR);
+		BEGIN
+			ScalarMultiplication(myPrivateKey, otherPublicKey, res);
+		END Agreement;
+
+BEGIN
+	Basepoint := ""; (* fill zeroes*)
+	Basepoint[0] := 9X;
+END CryptoX25519.

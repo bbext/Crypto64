@@ -1,0 +1,89 @@
+MODULE CryptoARC4;
+
+	(** AUTHOR "F.N."; PURPOSE "ALLEGED RC4 - stream cipher - keylength: from 1 to 256 bytes"; *)
+
+	IMPORT Ciphers := CryptoCiphers, BIT := CryptoAosBIT, AO := CryptoAosCompat;
+
+	TYPE
+		Cipher* = POINTER TO EXTENSIBLE RECORD(Ciphers.Cipher)
+			s : ARRAY 256 OF INTEGER;
+			i, j : INTEGER
+		END;
+
+
+	PROCEDURE (SELF: Cipher) Init* ;
+	BEGIN
+		SELF.SetNameAndBlocksize("arc4", 1);
+		SELF.isKeyInitialized := FALSE
+	END Init;
+
+	PROCEDURE (SELF: Cipher) InitKey* (IN src : ARRAY OF SHORTCHAR; keybits : AO.SIZE);
+		VAR
+			keydata: ARRAY 256 OF INTEGER;
+			keybytes: AO.SIZE;
+			i, temp: INTEGER;
+
+
+	BEGIN
+		ASSERT(keybits MOD 8 = 0);
+		ASSERT(keybits > 7);
+		ASSERT(keybits < 2049);
+		SELF.InitKey^(src, keybits);
+		keybytes := keybits DIV 8;
+		SELF.i := 0;
+		SELF.j := 0;
+		FOR i := 0 TO 255 DO
+			SELF.s[i] := i
+		END;
+		FOR i := 0 TO 255 DO
+			keydata[i] := ORD(src[i MOD keybytes])
+		END;
+		FOR i := 0 TO 255 DO
+			SELF.j := (SELF.j + SELF.s[i] + keydata[i]) MOD 256;
+			temp := SELF.s[i];
+			SELF.s[i] := SELF.s[SELF.j];
+			SELF.s[SELF.j] := temp
+		END;
+		SELF.isKeyInitialized := TRUE;
+		FOR i := 0 TO 255 DO
+			keydata[i] := 0
+		END;
+		SELF.i := 0;
+		SELF.j := 0
+	END InitKey;
+
+	PROCEDURE (SELF: Cipher) Encrypt* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+		VAR
+			k: AO.SIZE;
+			temp: AO.SIGNED32;
+			ch: SHORTCHAR;
+
+
+	BEGIN
+		ASSERT(SELF.isKeyInitialized);
+		FOR k := 0 TO len - 1 DO
+			SELF.i := (SELF.i + 1) MOD 256;
+			SELF.j := (SELF.j + SELF.s[SELF.i]) MOD 256;
+			temp := SELF.s[SELF.i];
+			SELF.s[SELF.i] := SELF.s[SELF.j];
+			SELF.s[SELF.j] := temp;
+			ch := (*WARN CONV CAST*)SHORT(CHR(SELF.s[(SELF.s[SELF.i] + SELF.s[SELF.j]) MOD 256]));
+			buf[ofs + k] := BIT.CXOR(buf[ofs + k], ch)
+		END
+	END Encrypt;
+
+	PROCEDURE (SELF: Cipher) Decrypt* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+
+	BEGIN
+		SELF.Encrypt(buf, ofs, len)
+	END Decrypt;
+
+	PROCEDURE NewCipher* (): Ciphers.Cipher;
+		VAR
+			c: Cipher;
+	BEGIN
+		NEW(c);c.Init();
+		RETURN c
+	END NewCipher;
+
+END CryptoARC4.

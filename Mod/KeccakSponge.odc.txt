@@ -1,0 +1,173 @@
+MODULE CryptoKeccakSponge;(** OUTHOR "GF"; PURPOSE "Keccak, sponge mode"; *)
+(*
+	The Keccak sponge function, designed by Guido Bertoni, Joan Daemen,
+	Michaël Peeters and Gilles Van Assche. For more information, feedback or
+	questions, please refer to our website: http://keccak.noekeon.org/
+*)
+
+	IMPORT Keccak := CryptoKeccakF1600, AO := CryptoAosCompat;
+
+	CONST
+		LaneSize = Keccak.LaneSize;
+		Width* = Keccak.Width;
+		DefaultRate* = 1024;
+		DefaultCapacity* = 576;
+
+	TYPE
+		Instance* = POINTER TO EXTENSIBLE RECORD
+			state : Keccak.Instance;
+			chunk : AO.SIZE;
+			index : AO.SIZE;
+			squeezing : BOOLEAN;
+			cmodl : AO.SIZE;
+			cdivl : AO.SIZE
+		END;
+
+
+	PROCEDURE (SELF: Instance) Initialize* (rate, capacity : AO.SIZE), NEW;
+
+	BEGIN
+		ASSERT(rate + capacity = Width);
+		ASSERT((rate > 0) & (rate <= Width) & (rate MOD 8 = 0));
+		SELF.state.Initialize;
+		SELF.chunk := rate DIV 8;
+		SELF.index := 0;
+		SELF.cmodl := SELF.chunk MOD LaneSize;
+		SELF.cdivl := SELF.chunk DIV LaneSize;
+		SELF.squeezing := FALSE
+	END Initialize;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: Instance) Init* , NEW;
+
+	BEGIN
+		NEW(SELF.state);
+		SELF.Initialize(DefaultRate, DefaultCapacity)
+	END Init;
+
+
+	PROCEDURE (SELF: Instance) Absorb* (IN data : ARRAY OF SHORTCHAR; offset, len : AO.SIZE), NEW;
+		VAR
+			piece, lanes, laneNo, laneOffset, bytes: AO.SIZE;
+
+
+	BEGIN
+		ASSERT(SELF.squeezing = FALSE);
+		WHILE len > 0 DO
+			IF (SELF.index = 0) & (len >= SELF.chunk) THEN
+				SELF.state.XORLanes(data, offset, SELF.cdivl);
+				IF SELF.cmodl # 0 THEN
+					SELF.state.XORBytesInLane(SELF.cdivl, 0, SELF.cmodl, data, offset)
+				END;
+				SELF.state.Permute;
+				INC(offset, SELF.chunk);
+				DEC(len, SELF.chunk)
+			ELSE
+				piece := len;
+				IF SELF.index + piece > SELF.chunk THEN
+					piece := SELF.chunk - SELF.index
+				END;
+				IF (SELF.index = 0) & (piece >= LaneSize) THEN
+					lanes := piece DIV LaneSize;
+					bytes := lanes * LaneSize;
+					SELF.state.XORLanes(data, offset, lanes);
+					INC(offset, bytes);
+					DEC(len, bytes);
+					DEC(piece, bytes);
+					INC(SELF.index, bytes)
+				END;
+				WHILE piece > 0 DO
+					laneNo := SELF.index DIV LaneSize;
+					laneOffset := SELF.index MOD LaneSize;
+					bytes := LaneSize - laneOffset;
+					IF bytes > piece THEN
+						bytes := piece
+					END;
+					SELF.state.XORBytesInLane(laneNo, laneOffset, bytes, data, offset);
+					INC(offset, bytes);
+					DEC(len, bytes);
+					DEC(piece, bytes);
+					INC(SELF.index, bytes)
+				END;
+				IF SELF.index = SELF.chunk THEN
+					SELF.state.Permute;
+					SELF.index := 0
+				END
+			END
+		END
+	END Absorb;
+
+
+	PROCEDURE (SELF: Instance) AbsorbLastFewBits* (data : SHORTCHAR), NEW;
+		VAR
+			tmp: ARRAY 4 OF SHORTCHAR;
+
+
+	BEGIN
+		ASSERT((data # 0X) & (SELF.squeezing = FALSE));
+		tmp[0] := data;
+		SELF.state.XORBytesInLane(SELF.index DIV LaneSize, SELF.index MOD LaneSize, 1, tmp, 0);
+		IF (data >= 80X) & (SELF.index = SELF.chunk - 1) THEN
+			SELF.state.Permute
+		END;
+		SELF.state.ComplementBit(SELF.chunk * 8 - 1);
+		SELF.state.Permute;
+		SELF.index := 0;
+		SELF.squeezing := TRUE
+	END AbsorbLastFewBits;
+
+	PROCEDURE (SELF: Instance) Squeeze* (VAR data : ARRAY OF SHORTCHAR; offset, len : AO.SIZE), NEW;
+		VAR
+			piece, lanes, laneNo, laneOffset, bytes: AO.SIZE;
+
+
+	BEGIN
+		IF ~SELF.squeezing THEN
+			SELF.AbsorbLastFewBits(01X)
+		END;
+		WHILE len > 0 DO
+			IF (SELF.index = SELF.chunk) & (len >= SELF.chunk) THEN
+				SELF.state.Permute;
+				SELF.state.ExtractLanes(data, offset, SELF.cdivl);
+				IF SELF.cmodl # 0 THEN
+					SELF.state.ExtractBytesInLane(SELF.cdivl, 0, SELF.cmodl, data, offset + SELF.cdivl * LaneSize)
+				END;
+				INC(offset, SELF.chunk);
+				DEC(len, SELF.chunk)
+			ELSE
+				IF SELF.index = SELF.chunk THEN
+					SELF.state.Permute;
+					SELF.index := 0
+				END;
+				piece := len;
+				IF SELF.index + piece > SELF.chunk THEN
+					piece := SELF.chunk - SELF.index
+				END;
+				IF (SELF.index = 0) & (piece >= LaneSize) THEN
+					lanes := piece DIV LaneSize;
+					bytes := lanes * LaneSize;
+					SELF.state.ExtractLanes(data, offset, lanes);
+					DEC(len, bytes);
+					INC(offset, bytes);
+					INC(SELF.index, bytes);
+					DEC(piece, bytes)
+				END;
+				WHILE piece > 0 DO
+					laneNo := SELF.index DIV LaneSize;
+					laneOffset := SELF.index MOD LaneSize;
+					bytes := LaneSize - laneOffset;
+					IF bytes > piece THEN
+						bytes := piece
+					END;
+					SELF.state.ExtractBytesInLane(laneNo, laneOffset, bytes, data, offset);
+					DEC(len, bytes);
+					INC(offset, bytes);
+					INC(SELF.index, bytes);
+					DEC(piece, bytes)
+				END
+			END
+		END
+	END Squeeze;
+
+
+END CryptoKeccakSponge.

@@ -1,0 +1,447 @@
+MODULE CryptoAES;
+
+(** AES (Rijndael) de/encryption *)
+
+(*	2002.07.22	g.f.  *)
+
+(* Port from AOS to CP by Anton Shelin 07.2023*)
+
+	IMPORT Ciphers := CryptoCiphers, U := CryptoUtils, AO := CryptoAosCompat, SYSTEM;
+
+	CONST
+		MaxRounds = 14;
+		ECB = Ciphers.ECB;
+		CBC = Ciphers.CBC;
+		CTR = Ciphers.CTR;
+
+		b0 = BITS(0FFH);
+		b1 = BITS(0FF00H);
+		b2 = BITS(0FF0000H);
+		b3 = BITS(0FF000000H);
+
+	TYPE
+		RTable = ARRAY 256 OF SET;
+		RKeys = ARRAY 4 * (MaxRounds + 1) OF SET;(*round keys*)
+
+	VAR
+		e0, e1, e2, e3, e4: RTable;
+		d0, d1, d2, d3, d4: RTable;
+				(* Round constants for key expansion*)
+		rcon: ARRAY 10 OF SET;(* for 128-bit blocks, Rijndael never uses more than 10 rcon values *)
+
+	TYPE
+
+		Block = ARRAY 4 OF SET;
+		BlockU8 = ARRAY 16 OF AO.UNSIGNED8;
+		Ind4 = RECORD a, b, c, d: INTEGER END;
+		
+		Cipher* = POINTER TO EXTENSIBLE RECORD (Ciphers.Cipher)
+			rounds : AO.SIGNED8;
+			key, dkey : RKeys;(*round keys len = rounds * 4*)
+			iv : Block(*block init vector*)
+		END;
+
+	PROCEDURE (SELF: Cipher) split (s : SET; VAR b : Ind4), NEW;
+
+	BEGIN
+		b.a := ORD(s) MOD 100H;
+		b.b := ORD(s) DIV 100H MOD 100H;
+		b.c := ORD(s) DIV 10000H MOD 100H;
+		b.d := ORD(s) DIV 1000000H MOD 100H
+	END split;
+
+	PROCEDURE (SELF: Cipher) Init128 (IN src : ARRAY OF SHORTCHAR): AO.SIGNED8, NEW;
+		VAR
+			i, p: INTEGER;
+			ib: Ind4;
+
+
+	BEGIN
+		FOR i := 0 TO 3 DO
+			SELF.key[i] := U.SetFromBufferBE(src, 4 * i)
+		END;
+		p := 0;
+		i := 0;
+		LOOP
+			SELF.split(SELF.key[p + 3], ib);
+			SELF.key[p + 4] := SELF.key[p] / (e4[ib.c] * b3) / (e4[ib.b] * b2) / (e4[ib.a] * b1) / (e4[ib.d] * b0) / rcon[i];
+			SELF.key[p + 5] := SELF.key[p + 1] / SELF.key[p + 4];
+			SELF.key[p + 6] := SELF.key[p + 2] / SELF.key[p + 5];
+			SELF.key[p + 7] := SELF.key[p + 3] / SELF.key[p + 6];
+			INC(i);
+			IF i = 10 THEN
+				EXIT
+			END;
+			INC(p, 4)
+		END;
+		RETURN (*WARN CONV CAST*)SHORT(10)(*number of rounds*)
+	END Init128;
+
+	PROCEDURE (SELF: Cipher) Init192 (IN src : ARRAY OF SHORTCHAR): AO.SIGNED8, NEW;
+		VAR
+			i, p: INTEGER;
+			ib: Ind4;
+
+
+	BEGIN
+		FOR i := 0 TO 5 DO
+			SELF.key[i] := U.SetFromBufferBE(src, 4 * i)
+		END;
+		p := 0;
+		i := 0;
+		LOOP
+			SELF.split(SELF.key[p + 5], ib);
+			SELF.key[p + 6] := SELF.key[p] / (e4[ib.c] * b3) / (e4[ib.b] * b2) / (e4[ib.a] * b1) / (e4[ib.d] * b0) / rcon[i];
+			SELF.key[p + 7] := SELF.key[p + 1] / SELF.key[p + 6];
+			SELF.key[p + 8] := SELF.key[p + 2] / SELF.key[p + 7];
+			SELF.key[p + 9] := SELF.key[p + 3] / SELF.key[p + 8];
+			INC(i);
+			IF i = 8 THEN
+				EXIT
+			END;
+			SELF.key[p + 10] := SELF.key[p + 4] / SELF.key[p + 9];
+			SELF.key[p + 11] := SELF.key[p + 5] / SELF.key[p + 10];
+			INC(p, 6)
+		END;
+		RETURN (*WARN CONV CAST*)SHORT(12)
+	END Init192;
+
+	PROCEDURE (SELF: Cipher) Init256 (IN src : ARRAY OF SHORTCHAR): AO.SIGNED8, NEW;
+		VAR
+			i, p: INTEGER;
+			ib: Ind4;
+
+
+	BEGIN
+		FOR i := 0 TO 7 DO
+			SELF.key[i] := U.SetFromBufferBE(src, 4 * i)
+		END;
+		p := 0;
+		i := 0;
+		LOOP
+			SELF.split(SELF.key[p + 7], ib);
+			SELF.key[p + 8] := SELF.key[p] / (e4[ib.c] * b3) / (e4[ib.b] * b2) / (e4[ib.a] * b1) / (e4[ib.d] * b0) / rcon[i];
+			SELF.key[p + 9] := SELF.key[p + 1] / SELF.key[p + 8];
+			SELF.key[p + 10] := SELF.key[p + 2] / SELF.key[p + 9];
+			SELF.key[p + 11] := SELF.key[p + 3] / SELF.key[p + 10];
+			INC(i);
+			IF i = 7 THEN
+				EXIT
+			END;
+			SELF.split(SELF.key[p + 11], ib);
+			SELF.key[p + 12] := SELF.key[p + 4] / (e4[ib.d] * b3) / (e4[ib.c] * b2) / (e4[ib.b] * b1) / (e4[ib.a] * b0);
+			SELF.key[p + 13] := SELF.key[p + 5] / SELF.key[p + 12];
+			SELF.key[p + 14] := SELF.key[p + 6] / SELF.key[p + 13];
+			SELF.key[p + 15] := SELF.key[p + 7] / SELF.key[p + 14];
+			INC(p, 8)
+		END;
+		RETURN (*WARN CONV CAST*)SHORT(14)
+	END Init256;
+		(* key expansion*)
+	PROCEDURE (SELF: Cipher) InvertKeys , NEW;
+		VAR
+			i, j, k, p: INTEGER;
+			t: SET;
+			ib: Ind4;
+
+
+		PROCEDURE ind (s : SET): INTEGER;
+
+		BEGIN
+			RETURN ORD(s) MOD 100H
+		END ind;
+
+	BEGIN
+		SELF.dkey := SELF.key;
+		i := 0;
+		j := 4 * SELF.rounds;
+		WHILE i < j DO
+			FOR k := 0 TO 3 DO
+				t := SELF.dkey[i + k];
+				SELF.dkey[i + k] := SELF.dkey[j + k];
+				SELF.dkey[j + k] := t
+			END;
+			INC(i, 4);
+			DEC(j, 4)
+		END;
+		FOR i := 1 TO SELF.rounds - 1 DO
+			p := 4 * i;
+			SELF.split(SELF.dkey[p + 0], ib);
+			SELF.dkey[p + 0] := d0[ind(e4[ib.d])] / d1[ind(e4[ib.c])] / d2[ind(e4[ib.b])] / d3[ind(e4[ib.a])];
+			SELF.split(SELF.dkey[p + 1], ib);
+			SELF.dkey[p + 1] := d0[ind(e4[ib.d])] / d1[ind(e4[ib.c])] / d2[ind(e4[ib.b])] / d3[ind(e4[ib.a])];
+			SELF.split(SELF.dkey[p + 2], ib);
+			SELF.dkey[p + 2] := d0[ind(e4[ib.d])] / d1[ind(e4[ib.c])] / d2[ind(e4[ib.b])] / d3[ind(e4[ib.a])];
+			SELF.split(SELF.dkey[p + 3], ib);
+			SELF.dkey[p + 3] := d0[ind(e4[ib.d])] / d1[ind(e4[ib.c])] / d2[ind(e4[ib.b])] / d3[ind(e4[ib.a])]
+		END
+	END InvertKeys;
+
+	PROCEDURE (SELF: Cipher) InitKey* (IN src : ARRAY OF SHORTCHAR; keybits : AO.SIZE);
+
+	BEGIN
+		SELF.InitKey^(src, keybits);
+		IF keybits = 128 THEN
+			SELF.rounds := SELF.Init128(src)
+		ELSIF keybits = 192 THEN
+			SELF.rounds := SELF.Init192(src)
+		ELSE
+			SELF.rounds := SELF.Init256(src)
+		END;
+		SELF.InvertKeys (*key expansion*)
+	END InitKey;
+
+	PROCEDURE (SELF: Cipher) SetIV* (IN src : ARRAY OF SHORTCHAR; mode : AO.SIGNED8);
+
+	BEGIN
+		SELF.SetIV^(src, mode);
+		U.BufferToBlockBE(src, 0, SYSTEM.VAL(BlockU8,SELF.iv))
+	END SetIV;
+
+	PROCEDURE (SELF: Cipher) IncIV , NEW;
+		VAR
+			i: INTEGER;
+			x: AO.SIGNED32;
+	BEGIN
+		i := 4;
+		REPEAT
+			DEC(i);
+			x := ORD(SELF.iv[i]) + 1;
+			SELF.iv[i] := BITS(x)
+		UNTIL (x # 0) OR (i = 0)
+	END IncIV;
+
+	PROCEDURE (SELF: Cipher) RoundD (VAR b : Block), NEW;
+		VAR
+			p, r: INTEGER;
+			t0, t1, t2, t3, s0, s1, s2, s3: Ind4;
+
+
+	BEGIN
+		SELF.split(b[0], s0);
+		SELF.split(b[1], s1);
+		SELF.split(b[2], s2);
+		SELF.split(b[3], s3);
+		r := SELF.rounds DIV 2;
+		p := 0;
+		LOOP
+						(* SubBytes ShiftRows*)
+			SELF.split(d0[s0.d] / d1[s3.c] / d2[s2.b] / d3[s1.a] / SELF.dkey[p + 4], t0);
+			SELF.split(d0[s1.d] / d1[s0.c] / d2[s3.b] / d3[s2.a] / SELF.dkey[p + 5], t1);
+			SELF.split(d0[s2.d] / d1[s1.c] / d2[s0.b] / d3[s3.a] / SELF.dkey[p + 6], t2);
+			SELF.split(d0[s3.d] / d1[s2.c] / d2[s1.b] / d3[s0.a] / SELF.dkey[p + 7], t3);
+			INC(p, 8);
+			DEC(r);
+			IF r = 0 THEN
+				EXIT
+			END;
+						(* MixColumns([0x02, 003, 0x01, 0x01])*)
+			SELF.split(d0[t0.d] / d1[t3.c] / d2[t2.b] / d3[t1.a] / SELF.dkey[p + 0], s0);
+			SELF.split(d0[t1.d] / d1[t0.c] / d2[t3.b] / d3[t2.a] / SELF.dkey[p + 1], s1);
+			SELF.split(d0[t2.d] / d1[t1.c] / d2[t0.b] / d3[t3.a] / SELF.dkey[p + 2], s2);
+			SELF.split(d0[t3.d] / d1[t2.c] / d2[t1.b] / d3[t0.a] / SELF.dkey[p + 3], s3)
+		END;
+		b[0] := (d4[t0.d] * b3) / (d4[t3.c] * b2) / (d4[t2.b] * b1) / (d4[t1.a] * b0) / SELF.dkey[p + 0];
+		b[1] := (d4[t1.d] * b3) / (d4[t0.c] * b2) / (d4[t3.b] * b1) / (d4[t2.a] * b0) / SELF.dkey[p + 1];
+		b[2] := (d4[t2.d] * b3) / (d4[t1.c] * b2) / (d4[t0.b] * b1) / (d4[t3.a] * b0) / SELF.dkey[p + 2];
+		b[3] := (d4[t3.d] * b3) / (d4[t2.c] * b2) / (d4[t1.b] * b1) / (d4[t0.a] * b0) / SELF.dkey[p + 3]
+	END RoundD;
+
+	PROCEDURE (SELF: Cipher) RoundE (VAR b : Block), NEW;
+		VAR
+			p, r: INTEGER;
+			t0, t1, t2, t3, s0, s1, s2, s3: Ind4;
+
+
+	BEGIN
+				(*AddRoundKey(0) already done	*)
+		SELF.split(b[0], s0);
+		SELF.split(b[1], s1);
+		SELF.split(b[2], s2);
+		SELF.split(b[3], s3);
+		r := SELF.rounds DIV 2;
+		p := 0;
+		LOOP
+						(* SubBytes ShiftRows*)
+			SELF.split(e0[s0.d] / e1[s1.c] / e2[s2.b] / e3[s3.a] / SELF.key[p + 4], t0);
+			SELF.split(e0[s1.d] / e1[s2.c] / e2[s3.b] / e3[s0.a] / SELF.key[p + 5], t1);
+			SELF.split(e0[s2.d] / e1[s3.c] / e2[s0.b] / e3[s1.a] / SELF.key[p + 6], t2);
+			SELF.split(e0[s3.d] / e1[s0.c] / e2[s1.b] / e3[s2.a] / SELF.key[p + 7], t3);
+			INC(p, 8);
+			DEC(r);
+			IF r = 0 THEN
+				EXIT
+			END;
+						(* MixColumns([0x02, 003, 0x01, 0x01]) AddRoundKey*)
+			SELF.split(e0[t0.d] / e1[t1.c] / e2[t2.b] / e3[t3.a] / SELF.key[p + 0], s0);
+			SELF.split(e0[t1.d] / e1[t2.c] / e2[t3.b] / e3[t0.a] / SELF.key[p + 1], s1);
+			SELF.split(e0[t2.d] / e1[t3.c] / e2[t0.b] / e3[t1.a] / SELF.key[p + 2], s2);
+			SELF.split(e0[t3.d] / e1[t0.c] / e2[t1.b] / e3[t2.a] / SELF.key[p + 3], s3)
+		END;
+				(*AddRoundKey Nk*)
+		b[0] := (e4[t0.d] * b3) / (e4[t1.c] * b2) / (e4[t2.b] * b1) / (e4[t3.a] * b0) / SELF.key[p + 0];
+		b[1] := (e4[t1.d] * b3) / (e4[t2.c] * b2) / (e4[t3.b] * b1) / (e4[t0.a] * b0) / SELF.key[p + 1];
+		b[2] := (e4[t2.d] * b3) / (e4[t3.c] * b2) / (e4[t0.b] * b1) / (e4[t1.a] * b0) / SELF.key[p + 2];
+		b[3] := (e4[t3.d] * b3) / (e4[t0.c] * b2) / (e4[t1.b] * b1) / (e4[t2.a] * b0) / SELF.key[p + 3]
+	END RoundE;
+
+	PROCEDURE (SELF: Cipher) Encrypt* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+		VAR i, j: AO.SIZE; x, y: Block;
+	BEGIN
+		ASSERT(SELF.isKeyInitialized);
+		ASSERT(len MOD SELF.blockSize = 0);
+		i := 0;
+		WHILE i < len DO
+			U.BufferToBlockBE(buf, ofs + i, SYSTEM.VAL(BlockU8,x));(*get block*)
+						(*actually we need to move xor with key(AddRoundKey(0)) into RoundE*)
+			CASE SELF.mode OF
+			| ECB:
+				FOR j := 0 TO 3 DO
+					x[j] := x[j] / SELF.key[j]
+				END;
+				SELF.RoundE(x)
+			| CBC:
+				FOR j := 0 TO 3 DO
+					x[j] := x[j] / SELF.key[j] / SELF.iv[j]
+				END;
+				SELF.RoundE(x);
+				SELF.iv := x
+			| CTR :
+				FOR j := 0 TO 3 DO
+					y[j] := SELF.iv[j] / SELF.key[j]
+				END;
+				SELF.RoundE(y);
+				FOR j := 0 TO 3 DO
+					x[j] := x[j] / y[j]
+				END;
+				SELF.IncIV
+			END;
+			U.BlockToBufferBE(SYSTEM.VAL(BlockU8,x), buf, ofs + i);
+			INC(i, SELF.blockSize)
+		END
+	END Encrypt;
+
+	PROCEDURE (SELF: Cipher) Decrypt* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+		VAR x0, x, y: Block; i, j: AO.SIZE;
+	BEGIN
+		ASSERT(SELF.isKeyInitialized);
+		ASSERT(len MOD SELF.blockSize = 0);
+		i := 0;
+		WHILE i < len DO
+			U.BufferToBlockBE(buf, ofs + i, SYSTEM.VAL(BlockU8,x0));
+			CASE SELF.mode OF
+			| ECB:   
+				FOR j := 0 TO 3 DO
+					x[j] := x0[j] / SELF.dkey[j]
+				END;
+				SELF.RoundD(x)
+			| CBC:   
+				FOR j := 0 TO 3 DO
+					x[j] := x0[j] / SELF.dkey[j]
+				END;
+				SELF.RoundD(x);
+				FOR j := 0 TO 3 DO
+					x[j] := x[j] / SELF.iv[j]
+				END;
+				SELF.iv := x0
+			| CTR:
+				FOR j := 0 TO 3 DO
+					y[j] := SELF.iv[j] / SELF.key[j]
+				END;
+				SELF.RoundE(y);
+				FOR j := 0 TO 3 DO
+					x[j] := x0[j] / y[j]
+				END;
+				SELF.IncIV
+			END;
+			U.BlockToBufferBE(SYSTEM.VAL(BlockU8,x), buf, ofs + i);
+			INC(i, SELF.blockSize)
+		END
+	END Decrypt;
+
+	PROCEDURE (c: Cipher) Init*;
+	BEGIN
+		c.SetNameAndBlocksize("aes", 16)
+	END Init;
+
+	PROCEDURE NewCipher* (): Ciphers.Cipher;
+		VAR cipher: Cipher;
+	BEGIN
+		NEW(cipher);cipher.Init();
+		RETURN cipher
+	END NewCipher;
+
+	PROCEDURE Initialize ;
+		VAR
+			i1, i2, i4, i8, i9, ib, id, ie, v1, v2, v3, t: INTEGER;
+			buf: U.InitBuffer;
+
+		PROCEDURE xor (a, b : INTEGER): INTEGER;
+		BEGIN
+			RETURN ORD(BITS(a) / BITS(b))
+		END xor;
+
+		(* times in GF(2^8) *)
+		PROCEDURE f1 (x : INTEGER): INTEGER;
+			VAR y: INTEGER;
+		BEGIN
+			y := 2 * x;(*shift left 1*)
+			IF y < 256 THEN 
+				RETURN y
+			ELSE (*high bit is set*)
+				RETURN xor(y, 11BH) (* sub m in GF*)
+			END
+		END f1;
+
+	BEGIN
+		NEW(buf); buf.Init( 2048);(*s box*)
+		buf.Add(" 63 7C 77 7B F2 6B 6F C5 30 01 67 2B FE D7 AB 76 ");
+		buf.Add(" CA 82 C9 7D FA 59 47 F0 AD D4 A2 AF 9C A4 72 C0 ");
+		buf.Add(" B7 FD 93 26 36 3F F7 CC 34 A5 E5 F1 71 D8 31 15 ");
+		buf.Add(" 04 C7 23 C3 18 96 05 9A 07 12 80 E2 EB 27 B2 75 ");
+		buf.Add(" 09 83 2C 1A 1B 6E 5A A0 52 3B D6 B3 29 E3 2F 84 ");
+		buf.Add(" 53 D1 00 ED 20 FC B1 5B 6A CB BE 39 4A 4C 58 CF ");
+		buf.Add(" D0 EF AA FB 43 4D 33 85 45 F9 02 7F 50 3C 9F A8 ");
+		buf.Add(" 51 A3 40 8F 92 9D 38 F5 BC B6 DA 21 10 FF F3 D2 ");
+		buf.Add(" CD 0C 13 EC 5F 97 44 17 C4 A7 7E 3D 64 5D 19 73 ");
+		buf.Add(" 60 81 4F DC 22 2A 90 88 46 EE B8 14 DE 5E 0B DB ");
+		buf.Add(" E0 32 3A 0A 49 06 24 5C C2 D3 AC 62 91 95 E4 79 ");
+		buf.Add(" E7 C8 37 6D 8D D5 4E A9 6C 56 F4 EA 65 7A AE 08 ");
+		buf.Add(" BA 78 25 2E 1C A6 B4 C6 E8 DD 74 1F 4B BD 8B 8A ");
+		buf.Add(" 70 3E B5 66 48 03 F6 0E 61 35 57 B9 86 C1 1D 9E ");
+		buf.Add(" E1 F8 98 11 69 D9 8E 94 9B 1E 87 E9 CE 55 28 DF ");
+		buf.Add(" 8C A1 89 0D BF E6 42 68 41 99 2D 0F B0 54 BB 16 ");
+		FOR i1 := 0 TO 255 DO
+			v1 := buf.GetInt(); (*s box value*)
+			v2 := f1(v1);
+			v3 := xor(v2, v1);
+			i2 := f1(i1);
+			i4 := f1(i2);
+			i8 := f1(i4);
+			i9 := xor(i8, i1);
+			ib := xor(i9, i2);
+			id := xor(i9, i4);
+			ie := xor(i8, xor(i4, i2));
+			(*Mix columns matrix prepare*)
+			e0[i1] := BITS(((v2 * 100H + v1) * 100H + v1) * 100H + v3);
+			e1[i1] := BITS(((v3 * 100H + v2) * 100H + v1) * 100H + v1);
+			e2[i1] := BITS(((v1 * 100H + v3) * 100H + v2) * 100H + v1);
+			e3[i1] := BITS(((v1 * 100H + v1) * 100H + v3) * 100H + v2);
+			e4[i1] := BITS(((v1 * 100H + v1) * 100H + v1) * 100H + v1);
+			
+			d0[v1] := BITS(((ie * 100H + i9) * 100H + id) * 100H + ib);
+			d1[v1] := BITS(((ib * 100H + ie) * 100H + i9) * 100H + id);
+			d2[v1] := BITS(((id * 100H + ib) * 100H + ie) * 100H + i9);
+			d3[v1] := BITS(((i9 * 100H + id) * 100H + ib) * 100H + ie);
+			d4[v1] := BITS(((i1 * 100H + i1) * 100H + i1) * 100H + i1)
+		END;
+		t := 1;
+		FOR i1 := 0 TO 9 DO
+			rcon[i1] := BITS(ASH(t, 24));
+			t := f1(t)
+		END
+	END Initialize;
+
+BEGIN
+	Initialize
+END CryptoAES.

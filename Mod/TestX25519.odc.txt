@@ -1,0 +1,110 @@
+MODULE CryptoTestX25519;
+
+(*Port from c#(https://github.com/HirbodBehnam/X25519-CSharp/) by Anton Shelin 2023*)
+(* https://www.rfc-editor.org/rfc/rfc7748 *)
+
+	IMPORT X25519 := CryptoX25519, CryptoBase64, StdLog;
+	
+
+		PROCEDURE GenerateTest*;
+			VAR key : X25519.X25519KeyPair;
+		BEGIN
+			X25519.GenerateKeyPair(key);
+			StdLog.String("Passed"); StdLog.Ln;
+		END GenerateTest;
+
+		PROCEDURE AgreementTest*;
+			VAR k1, k2 : X25519.X25519KeyPair;
+					i:INTEGER;
+					shared1,shared2: ARRAY 32 OF SHORTCHAR;
+		BEGIN
+
+			X25519.GenerateKeyPair(k1);
+			X25519.GenerateKeyPair(k2);
+
+			X25519.Agreement(k1.PrivateKey, k2.PublicKey, shared1);
+			X25519.Agreement(k2.PrivateKey, k1.PublicKey, shared2);
+
+			FOR i := 0 TO 31 DO ASSERT(shared1[i] = shared2[i]) END;
+			StdLog.String("Passed"); StdLog.Ln;
+		END AgreementTest;
+
+		PROCEDURE HugeAgreementTest*;
+			CONST rounds = 1000;
+			VAR r, i: INTEGER;
+					k1, k2 : X25519.X25519KeyPair;
+					shared1,shared2: ARRAY 32 OF SHORTCHAR;
+		BEGIN
+			FOR r := 0 TO rounds DO
+
+				X25519.GenerateKeyPair(k1);
+				X25519.GenerateKeyPair(k2);
+				X25519.Agreement(k1.PrivateKey, k2.PublicKey, shared1);
+				X25519.Agreement(k2.PrivateKey, k1.PublicKey, shared2);
+
+				FOR i := 0 TO 31 DO ASSERT(shared1[i] = shared2[i]) END
+			END;
+			StdLog.String("Passed"); StdLog.Ln;
+		END HugeAgreementTest;
+
+		PROCEDURE GenerateKeyFromPrivateKeyTest*;
+			VAR
+				key, newKey : X25519.X25519KeyPair;
+				i: INTEGER;
+		BEGIN
+			X25519.GenerateKeyPair(key);
+			X25519.GenerateKeyFromPrivateKey(key.PrivateKey, newKey);
+			FOR i := 0 TO 31 DO ASSERT(key.PublicKey[i] = newKey.PublicKey[i]) END;
+			StdLog.String("Passed"); StdLog.Ln;
+		END GenerateKeyFromPrivateKeyTest;
+
+		PROCEDURE GenerateKeyFromPrivateKeyTest2*;
+			CONST secret = "dbfEcOMjYactMkh33DRhg0h1VCbmhxoWt6AR3rp6000=";
+			VAR key1, key2 : X25519.X25519KeyPair;
+					priv1,priv2: ARRAY 32 OF SHORTCHAR;
+					len,i: INTEGER;
+					shared1,shared2: ARRAY 32 OF SHORTCHAR;
+					secret1,secret2:ARRAY 256 OF SHORTCHAR;
+		BEGIN
+			len := CryptoBase64.Decode("sECe8YYQT/bODurKruM8QpGFBTahurW8GqxFL+AYiW8=", priv1);
+			ASSERT(len = 32);
+			len := CryptoBase64.Decode("wAidyKs9iF+KA1cgBxa1rMtPwemOLFHqSIe5nkVRN2o=", priv2);
+			ASSERT(len = 32);
+			
+			X25519.GenerateKeyFromPrivateKey(priv1, key1);
+			X25519.GenerateKeyFromPrivateKey(priv2, key2);
+
+			X25519.Agreement(key1.PrivateKey, key2.PublicKey, shared1);
+			X25519.Agreement(key2.PrivateKey, key1.PublicKey, shared2);
+			
+			CryptoBase64.Encode(shared1, 32, secret1);
+			CryptoBase64.Encode(shared2, 32, secret2);
+			ASSERT(secret1 = secret2);
+			ASSERT(secret = secret1);
+			StdLog.String("Passed"); StdLog.Ln;
+		END GenerateKeyFromPrivateKeyTest2;
+
+
+		PROCEDURE GenerateKeyFromPrivateKeyTest3*;
+			VAR key : X25519.X25519KeyPair;
+					i, len: INTEGER;
+					pub, priv: ARRAY 32 OF SHORTCHAR;
+		BEGIN
+			len := CryptoBase64.Decode("aF9hmPSeJfKvjPam++gl7MRIQydQQu2Jdee8zOTX+lY=", priv);
+			ASSERT(len = 32);
+			len := CryptoBase64.Decode("FTM52WXsEjj5hBY53RTUFmG2qUwzZxPRJdYs9lu/y3M=", pub);
+			ASSERT(len = 32);
+
+			X25519.GenerateKeyFromPrivateKey(priv, key);
+			FOR i :=0 TO 31 DO ASSERT(key.PublicKey[i]  = pub[i]) END;
+			StdLog.String("Passed"); StdLog.Ln;
+		END GenerateKeyFromPrivateKeyTest3;
+
+END CryptoTestX25519.
+
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestX25519.GenerateTest
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestX25519.AgreementTest
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestX25519.HugeAgreementTest
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestX25519.GenerateKeyFromPrivateKeyTest
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestX25519.GenerateKeyFromPrivateKeyTest2
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestX25519.GenerateKeyFromPrivateKeyTest3

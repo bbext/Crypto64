@@ -1,0 +1,98 @@
+MODULE CryptoTestBigNumbers;
+
+	IMPORT BN := CryptoAosBigNumbers, Out := StdLog, AO := CryptoAosCompat, Integers;
+
+	PROCEDURE Test1* ;
+		VAR
+			b1, b2, b3, b4, result: BN.BigNumber;
+						result1, result2, result3, result4: BN.BigNumber;
+						bi1, bi2, bi3, iresult : Integers.Integer;
+						bi4 : INTEGER;
+						iResultStr : ARRAY 1024 OF CHAR;
+
+		CONST 
+				b1str ="0a66791dc6988168de7ab77419bb7fb0";
+				b2str ="c001c62710270075142942e19a8d8c51";
+				b3str ="d053b3e3782a1de5dc5af4ebe9946817";
+				b4str ="3";
+				
+				result1str ="CA683F44D6BF81DDF2A3FA55B4490C01";
+				result2str ="B59B4D09498E7F0C35AE8B6D80D20CA1";
+				result3str ="07CCED49A6019FFD6F318DA3F0C56B150E7EC8CE70E1F3EA8B7B1A93E217A6B0";
+				result4str ="2A5D449E77E846103A5471B0C07C279D";
+				
+				bi1str ="13824350768060865701912017683506495408";
+				bi2str ="255220986499561153936040907927083387985";
+				bi3str ="276914032335821953895966311527925180439";
+
+	BEGIN
+				Integers.ConvertFromString(bi1str, bi1);
+				Integers.ConvertFromString(bi2str, bi2);
+				Integers.ConvertFromString(bi3str, bi3);				
+				bi4 := 3;
+
+
+		BN.AssignHex(b1, b1str, 32); 
+		BN.AssignHex(b2, b2str, 32);
+		BN.AssignHex(b3, b3str, 32);
+				BN.AssignHex(b4, b4str, 1);
+				
+				BN.AssignHex(result1, result1str, LEN(result1str)); 
+		BN.AssignHex(result2, result2str, LEN(result2str));
+				result2.Negate;
+		BN.AssignHex(result3, result3str, LEN(result3str));
+				BN.AssignHex(result4, result4str, LEN(result4str));
+				
+		Out.String("b1: ");
+		BN.Print(b1);
+		Out.String("b2: ");
+		BN.Print(b2);
+		Out.String("b3: ");
+		BN.Print(b3);
+		Out.Ln;
+
+				iresult := Integers.Sum(bi1, bi2);
+				Integers.ConvertToString(iresult, iResultStr);
+		result := BN.Add(b1, b2);
+		Out.String("b1 + b2: ");
+				Out.String(iResultStr);
+				Out.Ln;
+		BN.Print(result);
+		Out.Ln;
+				ASSERT(result.EQ(result1));
+
+				iresult := Integers.Difference(bi1, bi2);
+				Integers.ConvertToString(iresult, iResultStr);
+		result := BN.Sub(b1, b2);
+		Out.String("b1 - b2: ");
+				Out.String(iResultStr);
+				Out.Ln;
+		BN.Print(result);
+		Out.Ln;
+				ASSERT(result.EQ(result2));
+
+				iresult := Integers.Product(bi1, bi2);
+				Integers.ConvertToString(iresult, iResultStr);
+		result := BN.Mul(b1, b2);
+		Out.String("b1 * b2: ");
+				Out.String(iResultStr);
+				Out.Ln;
+		BN.Print(result);
+		Out.Ln;
+				ASSERT(result.EQ(result3));
+
+				iresult := Integers.Power(bi1, bi4);
+				iresult := Integers.Remainder(iresult, bi3);
+				Integers.ConvertToString(iresult, iResultStr);
+		result := BN.ModExp(b1, b4, b3);
+		Out.String("b1^ b4 mod b3: ");
+				Out.String(iResultStr);
+				Out.Ln;
+		BN.Print(result);
+		Out.Ln;
+				ASSERT(result.EQ(result4));
+	END Test1;
+
+END CryptoTestBigNumbers.
+
+<odc-view type="DevCommanders.StdView" w="176203" h="150803" data="gvFEZXZDb21tYW5kZXJzLlN0ZFZpZXdEZXNjAPFEZXZDb21tYW5kZXJzLlZpZXdEZXNjAPFWaWV3cy5WaWV3RGVzYwDwU3RvcmVzLlN0b3JlRGVzYwAAAAAAAAAAAAAAAAAGAAAAAAAAFQAA"/>CryptoTestBigNumbers.Test1

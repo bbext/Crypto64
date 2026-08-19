@@ -1,0 +1,1053 @@
+MODULE CryptoAosIP;
+
+	(** AUTHOR "pjm, mvt, eb"; PURPOSE "IP (v4 and v6)"; *)
+	(* Aos, Copyright 2001, Pieter Muller, ETH Zurich *)
+
+	IMPORT SYSTEM, Log := StdLog, Strings := CryptoAosStrings,  AO := CryptoAosCompat;
+
+	CONST
+		DEBUG = TRUE;
+		Ok* = 0;
+		DeviceAlreadyUsed* = 3901;
+		DuplicateInterfaceName* = 3902;
+		NoInterfaceName* = 3903;
+		GatewayNotInSubnet* = 3904;
+		IPv6AdrUsedOnIPv4Interface* = 4001;
+		IPv4AdrUsedOnIPv6Interface* = 4002;
+		DublicatedAddresses* = 4003;
+		MixedIpProtocols* = 4003;
+		LocalAdrSetIntv6* = 4004;
+		PrefixNotSet* = 4005;
+		MaxNofDNS* = 10;
+		MaxTTL* = 255;
+		NbrOfReceivers = 255;
+		NilAdrIPv4 = 0;
+		IPv4* = 4;
+		IPv6* = 6;
+		NilAdrIdent = (-1);
+		ICMPHdrLen* = 4;
+		ICMPSrcLLAdrOptionType* = 1;
+		ICMPTargetLLAdrOptionType* = 2;
+		ICMPPrefixInfoOptionType* = 3;
+		ICMPRedirectHdrOptionType* = 4;
+		ICMPMTUOptionType* = 5;
+		ICMPAdvIntOptionType* = 7;
+		ICMPHomeAgOptionType* = 8;
+		ICMPRouteOption* = 9;
+
+	TYPE
+		Adr* = RECORD
+			ipv4Adr* : AO.SIGNED32;
+			ipv6Adr* : ARRAY 16 OF SHORTCHAR;
+			usedProtocol* : AO.SIGNED32;
+			data* : AO.SIGNED32
+		END;
+
+
+	TYPE
+		Packet* = POINTER TO ARRAY OF SHORTCHAR;
+		Name* = ARRAY 128 OF SHORTCHAR;
+
+	VAR
+
+		NilAdr*: Adr;
+		preferredProtocol: AO.SIGNED32;
+		NIPSentToSubnet, NIPSentToGateway, NIPSentBroadcast, NIPCantFragment, NIPRcvTotal, NIPTooSmall, NIPBadVersion, NIPOptions, NIPBadChecksum, NIPBadLength, NIPTrim, NIPBadHdrLen, NIPNotForUs, NIPCantReassemble, NIPSrcIsBroadcast, NIPDelivered, NIPNoReceiver, NIPForwarded, NIPSentLocalLoopback, NIPSentPointToPoint: AO.SIGNED32;
+		IPForwarding: BOOLEAN;
+		EchoReply: BOOLEAN;
+
+		counter: AO.SIGNED32;
+
+	PROCEDURE IsNilAdr* (adr : Adr): BOOLEAN;
+		VAR
+			isNil: BOOLEAN;
+			i: AO.SIGNED32;
+	BEGIN
+		CASE adr.usedProtocol OF
+		| IPv4 :
+			RETURN (adr.ipv4Adr = NilAdrIPv4)
+		| IPv6 :
+			isNil := TRUE;
+			i := 0;
+			WHILE ((i < 16) & isNil) DO
+				IF adr.ipv6Adr[i] # 0X THEN
+					isNil := FALSE
+				END;
+				INC(i)
+			END;
+			RETURN isNil
+		| NilAdrIdent :
+			RETURN TRUE
+		ELSE
+			IF DEBUG THEN
+				ASSERT(TRUE)
+			END;
+			RETURN TRUE
+		END
+	END IsNilAdr;
+
+	PROCEDURE AdrsEqual* (adr1, adr2 : Adr): BOOLEAN;
+		VAR equal: BOOLEAN; i: AO.SIGNED32;
+	BEGIN
+		IF adr1.usedProtocol # adr2.usedProtocol THEN
+			RETURN FALSE
+		END;
+		CASE adr1.usedProtocol OF
+			IPv4 :	  IF adr1.ipv4Adr = adr2.ipv4Adr THEN
+			RETURN TRUE
+		END
+		|       IPv6 :	  equal := TRUE;
+		i := 0;
+		WHILE ((i < 16) & equal) DO
+			IF adr1.ipv6Adr[i] # adr2.ipv6Adr[i] THEN
+				equal := FALSE
+			END;
+			INC(i)
+		END;
+		IF adr1.data # adr2.data THEN
+			equal := FALSE
+		END;
+		RETURN equal
+		|       NilAdrIdent :	   IF adr2.usedProtocol = NilAdrIdent THEN
+			RETURN TRUE
+		ELSE
+			RETURN FALSE
+		END
+		ELSE
+			IF DEBUG THEN
+				ASSERT(TRUE)
+			END;
+			RETURN FALSE
+		END;
+		RETURN FALSE
+	END AdrsEqual;
+
+	PROCEDURE IsValidIPv4Str (IN ipString : ARRAY OF SHORTCHAR): BOOLEAN;
+		VAR
+			i, j: AO.SIGNED32;
+			ipNr: AO.SIGNED32;
+			digits: ARRAY 4 OF SHORTCHAR;
+			startClass: AO.SIGNED32;
+	BEGIN
+		i := 0;
+		WHILE (i < Strings.Length(ipString)) & (ipString[i] # '.') & (i < 3) DO
+			digits[i] := ipString[i];
+			INC(i)
+		END;
+		digits[i] := 0X;
+		IF ipString[i] # '.' THEN
+			RETURN FALSE
+		END;
+		j := 0;
+		WHILE digits[j] # 0X DO
+			IF (ORD(digits[j]) - ORD("0")) > 9 THEN
+				RETURN FALSE
+			END;
+			INC(j)
+		END;
+		Strings.StrToInt32(digits, ipNr);
+		IF ipNr > 255 THEN
+			RETURN FALSE
+		END;
+		INC(i);
+		startClass := i;
+		WHILE (i < Strings.Length(ipString)) & (ipString[i] # '.') & (i - startClass <= 3) DO
+			digits[i - startClass] := ipString[i];
+			INC(i)
+		END;
+		digits[i - startClass] := 0X;
+		IF ipString[i] # '.' THEN
+			RETURN FALSE
+		END;
+		j := 0;
+		WHILE digits[j] # 0X DO
+			IF (ORD(digits[j]) - ORD("0")) > 9 THEN
+				RETURN FALSE
+			END;
+			INC(j)
+		END;
+		Strings.StrToInt32(digits, ipNr);
+		IF ipNr > 255 THEN
+			RETURN FALSE
+		END;
+		INC(i);
+		startClass := i;
+		WHILE (i < Strings.Length(ipString)) & (ipString[i] # '.') & (i - startClass <= 3) DO
+			digits[i - startClass] := ipString[i];
+			INC(i)
+		END;
+		digits[i - startClass] := 0X;
+		IF ipString[i] # '.' THEN
+			RETURN FALSE
+		END;
+		j := 0;
+		WHILE digits[j] # 0X DO
+			IF (ORD(digits[j]) - ORD("0")) > 9 THEN
+				RETURN FALSE
+			END;
+			INC(j)
+		END;
+		Strings.StrToInt32(digits, ipNr);
+		IF ipNr > 255 THEN
+			RETURN FALSE
+		END;
+		INC(i);
+		startClass := i;
+		WHILE (i < Strings.Length(ipString)) & (i - startClass <= 3) DO
+			digits[i - startClass] := ipString[i];
+			INC(i)
+		END;
+		digits[i - startClass] := 0X;
+		j := 0;
+		WHILE digits[j] # 0X DO
+			IF (ORD(digits[j]) - ORD("0")) > 9 THEN
+				RETURN FALSE
+			END;
+			INC(j)
+		END;
+		Strings.StrToInt32(digits, ipNr);
+		IF ipNr > 255 THEN
+			RETURN FALSE
+		END;
+		RETURN TRUE
+	END IsValidIPv4Str;
+
+	PROCEDURE IsValidIPv6Str (ipString : ARRAY OF SHORTCHAR): BOOLEAN;
+		VAR
+			i: AO.SIGNED32;
+			state: AO.SIGNED32;
+			charCount: AO.SIGNED32;
+			ascD: AO.SIGNED32;
+			ascH: AO.SIGNED32;
+			dPointOcc: BOOLEAN;
+			prefixLenArr: ARRAY 3 OF AO.SIGNED32;
+			prefixLen: AO.SIGNED32;
+
+
+	BEGIN
+		i := 0;
+		state := 1;
+		dPointOcc := FALSE;
+		Strings.UpperCase(ipString);
+		WHILE (i < (LEN(ipString) - 1)) & (ipString[i] # 0X) DO
+			CASE state OF
+				(-1) :		  RETURN FALSE
+			|       1 :		     ascD := ORD(ipString[i]) - ORD("0");
+			ascH := ORD(ipString[i]) - ORD("A");
+			IF ((ascD >= 0) & (ascD <= 9)) OR ((ascH >= 0) & (ascH <= 5)) THEN
+				INC(charCount);
+				IF charCount > 4 THEN
+					state := (-1)
+				END
+			ELSIF ipString[i] = ":" THEN
+				charCount := 0;
+				state := 2
+			ELSIF ipString[i] = "/" THEN
+				charCount := 0;
+				state := 3
+			ELSE
+				state := (-1)
+			END
+			|       2 :		     ascD := ORD(ipString[i]) - ORD("0");
+			ascH := ORD(ipString[i]) - ORD("A");
+			IF ipString[i] = ":" THEN
+				IF dPointOcc THEN
+					state := (-1)
+				ELSE
+					dPointOcc := TRUE;
+					state := 4
+				END
+			ELSIF ((ascD >= 0) & (ascD <= 9)) OR ((ascH >= 0) & (ascH <= 5)) THEN
+				INC(charCount);
+				state := 1
+			ELSE
+				state := (-1)
+			END
+			|       3 :		     ascD := ORD(ipString[i]) - ORD("0");
+			IF ~((ascD >= 0) & (ascD <= 9)) THEN
+				state := (-1)
+			ELSE
+				IF charCount > 3 THEN
+					state := (-1)
+				ELSE
+					prefixLenArr[charCount] := ascD;
+					INC(charCount)
+				END
+			END
+			|       4 :		     ascD := ORD(ipString[i]) - ORD("0");
+			ascH := ORD(ipString[i]) - ORD("A");
+			IF ipString[i] = "/" THEN
+				state := 3
+			ELSIF ((ascD >= 0) & (ascD <= 9)) OR ((ascH >= 0) & (ascH <= 5)) THEN
+				INC(charCount);
+				state := 1
+			ELSE
+				state := (-1)
+			END
+			ELSE
+				IF DEBUG THEN
+					ASSERT(TRUE)
+				END
+			END;
+			INC(i)
+		END;
+		CASE state OF
+			1 :	     RETURN TRUE
+		|       3 :	     IF charCount > 0 THEN
+			prefixLen := 0;
+			FOR i := 0 TO charCount - 1 DO
+				prefixLen := prefixLen * 10;
+				INC(prefixLen, prefixLenArr[i])
+			END;
+			IF prefixLen <= 64 THEN
+				RETURN TRUE
+			ELSE
+				RETURN FALSE
+			END
+		ELSE
+			RETURN FALSE
+		END
+		|       4 :	     RETURN TRUE
+		ELSE
+			IF DEBUG THEN
+				ASSERT(TRUE)
+			END;
+			RETURN FALSE
+		END;
+		RETURN FALSE
+	END IsValidIPv6Str;
+
+	PROCEDURE StrToAdr* (ipString : ARRAY OF SHORTCHAR; VAR retAdr : Adr);
+		VAR
+			
+			i, j, x: AO.SIGNED32;
+			adr: ARRAY 4 OF SHORTCHAR;
+			ok: BOOLEAN;
+			charCount: AO.SIGNED32;
+			ipv6AdrPart: ARRAY 6 OF SHORTCHAR;
+			ipv6AdrRight: ARRAY 16 OF SHORTCHAR;
+			hexToChar: ARRAY 3 OF SHORTCHAR;
+			leftParts: AO.SIGNED32;
+			rightParts: AO.SIGNED32;
+			val: AO.SIGNED32;
+			res: INTEGER;
+			state: AO.SIGNED32;
+			dPointOcc: BOOLEAN;
+			prefixVal: AO.SIGNED32;
+
+
+		PROCEDURE ComputeIPv6Part (): BOOLEAN;
+
+		BEGIN
+			CASE charCount OF
+				0 :		     RETURN TRUE
+			|       1,2 :		   IF dPointOcc THEN
+				ipv6AdrRight[rightParts] := 0X;
+				INC(rightParts)
+			ELSE
+				retAdr.ipv6Adr[leftParts] := 0X;
+				INC(leftParts)
+			END;
+			Strings.HexStrToInt(ipv6AdrPart, val, res);
+			IF res = Strings.Ok THEN
+				IF dPointOcc THEN
+					ipv6AdrRight[rightParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(rightParts)
+				ELSE
+					retAdr.ipv6Adr[leftParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(leftParts)
+				END
+			ELSE
+				RETURN FALSE
+			END
+			|       3 :		     hexToChar[0] := ipv6AdrPart[0];
+			hexToChar[1] := 0X;
+			Strings.HexStrToInt(hexToChar, val, res);
+			IF res = Strings.Ok THEN
+				IF dPointOcc THEN
+					ipv6AdrRight[rightParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(rightParts)
+				ELSE
+					retAdr.ipv6Adr[leftParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(leftParts)
+				END
+			ELSE
+				RETURN FALSE
+			END;
+			ipv6AdrPart[0] := "0";
+			Strings.HexStrToInt(ipv6AdrPart, val, res);
+			IF res = Strings.Ok THEN
+				IF dPointOcc THEN
+					ipv6AdrRight[rightParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(rightParts)
+				ELSE
+					retAdr.ipv6Adr[leftParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(leftParts)
+				END
+			ELSE
+				RETURN FALSE
+			END
+			|       4 :		     hexToChar[0] := ipv6AdrPart[0];
+			hexToChar[1] := ipv6AdrPart[1];
+			hexToChar[2] := 0X;
+			Strings.HexStrToInt(hexToChar, val, res);
+			IF res = Strings.Ok THEN
+				IF dPointOcc THEN
+					ipv6AdrRight[rightParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(rightParts)
+				ELSE
+					retAdr.ipv6Adr[leftParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(leftParts)
+				END
+			ELSE
+				RETURN FALSE
+			END;
+			ipv6AdrPart[0] := "0";
+			ipv6AdrPart[1] := "0";
+			Strings.HexStrToInt(ipv6AdrPart, val, res);
+			IF res = Strings.Ok THEN
+				IF dPointOcc THEN
+					ipv6AdrRight[rightParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(rightParts)
+				ELSE
+					retAdr.ipv6Adr[leftParts] := (*WARN CONV CAST*)SHORT(CHR(val));
+					INC(leftParts)
+				END
+			ELSE
+				RETURN FALSE
+			END
+			ELSE
+				IF DEBUG THEN
+					ASSERT(TRUE)
+				END;
+				RETURN FALSE
+			END;
+			charCount := 0;
+			RETURN TRUE
+		END ComputeIPv6Part;
+
+	BEGIN
+		retAdr := NilAdr;
+		IF IsValidIPv4Str(ipString) THEN
+			i := 0;
+			j := 0;
+			x := (-1);
+			ok := FALSE;
+			LOOP
+				IF (ipString[i] = ".") OR (ipString[i] = 0X) THEN
+					IF (x < 0) OR (x > 255) OR (j = 4) THEN
+						EXIT
+					END;
+					adr[j] := (*WARN CONV CAST*)SHORT(CHR(x));
+					IF ipString[i] = 0X THEN
+						ok := (j = 3);
+						EXIT
+					END;
+					x := (-1);
+					INC(i);
+					INC(j)
+				ELSIF (ipString[i] >= "0") & (ipString[i] <= "9") THEN
+					IF x = (-1) THEN
+						x := 0
+					END;
+					x := x * 10 + (ORD(ipString[i]) - ORD("0"));
+					INC(i)
+				ELSE
+					EXIT
+				END
+			END;
+			IF ok THEN
+				retAdr.ipv4Adr := SYSTEM.VAL(AO.SIGNED32, adr);
+				retAdr.usedProtocol := IPv4;
+				RETURN 
+			ELSE
+				RETURN 
+			END
+		ELSIF IsValidIPv6Str(ipString) THEN
+			i := 0;
+			state := 1;
+			charCount := 0;
+			dPointOcc := FALSE;
+			retAdr.usedProtocol := 6;
+			retAdr.ipv4Adr := NilAdrIPv4;
+			i := 0;
+			j := 0;
+			charCount := 0;
+			leftParts := 0;
+			rightParts := 0;
+			prefixVal := 0;
+			Strings.UpperCase(ipString);
+			WHILE (i < (LEN(ipString) - 1)) & (ipString[i] # 0X) DO
+				CASE state OF
+					(-1) :     retAdr := NilAdr;
+													RETURN;
+				|       1 :			     IF ipString[i] = ":" THEN
+					ipv6AdrPart[charCount] := 0X;
+					IF ~ComputeIPv6Part() THEN
+												retAdr := NilAdr; RETURN 
+					END;
+					state := 2
+				ELSIF ipString[i] = "/" THEN
+					ipv6AdrPart[charCount] := 0X;
+					IF ~ComputeIPv6Part() THEN
+						retAdr := NilAdr; RETURN 
+					END;
+					state := 3
+				ELSE
+					ipv6AdrPart[charCount] := ipString[i];
+					INC(charCount)
+				END
+				|       2 :			     IF ipString[i] = ":" THEN
+					dPointOcc := TRUE;
+					state := 4
+				ELSE
+					state := 1;
+					charCount := 0;
+					ipv6AdrPart[charCount] := ipString[i];
+					INC(charCount)
+				END
+				|       3 :			     prefixVal := (prefixVal * 10) + (ORD(ipString[i]) - ORD("0"))
+				|       4 :			     IF ipString[i] = "/" THEN
+					state := 3
+				ELSE
+					IF ~ComputeIPv6Part() THEN
+						retAdr := NilAdr; RETURN 
+					END;
+					state := 1;
+					charCount := 0;
+					ipv6AdrPart[charCount] := ipString[i];
+					INC(charCount)
+				END
+				ELSE
+					IF DEBUG THEN
+						ASSERT(TRUE)
+					END
+				END;
+				INC(i)
+			END;
+			ipv6AdrPart[charCount] := 0X;
+			IF charCount # 0 THEN
+				IF ~ComputeIPv6Part() THEN
+					retAdr := NilAdr; RETURN 
+				END
+			END;
+			IF dPointOcc THEN
+				FOR i := leftParts TO ((LEN(retAdr.ipv6Adr) - 1) - rightParts) DO
+					retAdr.ipv6Adr[i] := 0X
+				END;
+				FOR i := 0 TO (rightParts - 1) DO
+					retAdr.ipv6Adr[(LEN(retAdr.ipv6Adr) - rightParts) + i] := ipv6AdrRight[i]
+				END
+			END;
+			IF prefixVal > 64 THEN
+				retAdr := NilAdr; RETURN 
+			END;
+			retAdr.data := prefixVal;
+			RETURN
+		END;
+		retAdr := NilAdr; RETURN 
+	END StrToAdr;
+
+
+	PROCEDURE SetIPv6AdrNil (VAR adr : Adr);
+		VAR
+			i: AO.SIGNED32;
+
+
+	BEGIN
+		FOR i := 0 TO 15 DO
+			adr.ipv6Adr[i] := 0X
+		END
+	END SetIPv6AdrNil;
+(* TODO TEST*)
+		PROCEDURE Put4*(VAR buf: ARRAY OF SHORTCHAR; ofs: AO.SIZE; val: INTEGER);
+			VAR r: ARRAY 4 OF SHORTCHAR; i:INTEGER;
+		BEGIN
+			FOR i := 0 TO 4 DO
+				r[i] := buf[ofs + i];
+			END;
+			val := SYSTEM.VAL(INTEGER, r);
+		END Put4; 
+
+	PROCEDURE AdrToStr* (adr : Adr; VAR string : ARRAY OF SHORTCHAR);
+		VAR
+			i, j, x: AO.SIGNED32;
+			a: ARRAY 4 OF SHORTCHAR;
+			val: AO.SIGNED32;
+			hexToStr: ARRAY 5 OF SHORTCHAR;
+			prefixLenStr: ARRAY 64 OF SHORTCHAR;
+			maxZeroRow: AO.SIGNED32;
+			currentZeroRow: AO.SIGNED32;
+			maxZeroStart: AO.SIGNED32;
+			currentZeroStart: AO.SIGNED32;
+			lastZero: BOOLEAN;
+			lastDPoint: BOOLEAN;
+			countEnded: BOOLEAN;
+
+
+	BEGIN
+		CASE adr.usedProtocol OF
+			IPv4 :	  ASSERT(LEN(string) >= 16);
+		Put4(a, 0, adr.ipv4Adr);
+		i := 0;
+		FOR j := 0 TO 3 DO
+			x := ORD(a[j]);
+			IF x >= 100 THEN
+				string[i] := (*WARN CONV CAST*)SHORT(CHR(ORD("0") + x DIV 100));
+				INC(i)
+			END;
+			IF x >= 10 THEN
+				string[i] := (*WARN CONV CAST*)SHORT(CHR(ORD("0") + x DIV 10 MOD 10));
+				INC(i)
+			END;
+			string[i] := (*WARN CONV CAST*)SHORT(CHR(ORD("0") + x MOD 10));
+			INC(i);
+			IF j = 3 THEN
+				string[i] := 0X
+			ELSE
+				string[i] := "."
+			END;
+			INC(i)
+		END
+		|       IPv6 :	  FOR i := 0 TO (LEN(adr.ipv6Adr) - 1) BY 2 DO
+			val := ORD(adr.ipv6Adr[i]) * 256;
+			val := val + ORD(adr.ipv6Adr[i + 1]);
+			Strings.IntToHexStr(val, 3, hexToStr);
+			WHILE (hexToStr[0] = "0") & (hexToStr[1] # 0X) DO
+				Strings.Delete(hexToStr, 0, 1)
+			END;
+			Strings.Append(string, hexToStr);
+			IF i # (LEN(adr.ipv6Adr) - 2) THEN
+				Strings.Append(string, ":")
+			END
+		END;
+		maxZeroRow := 0;
+		currentZeroRow := 0;
+		maxZeroStart := 0;
+		currentZeroStart := 0;
+		i := 0;
+		lastZero := FALSE;
+		lastDPoint := TRUE;
+		countEnded := TRUE;
+		WHILE string[i] # 0X DO
+			IF string[i] = "0" THEN
+				IF lastDPoint THEN
+					INC(currentZeroRow);
+					lastZero := TRUE;
+					lastDPoint := FALSE;
+					IF countEnded THEN
+						currentZeroStart := i;
+						countEnded := FALSE
+					END
+				END
+			ELSIF string[i] = ":" THEN
+				lastDPoint := TRUE;
+				IF lastZero THEN
+					lastZero := FALSE
+				END
+			ELSE
+				IF lastDPoint THEN
+					lastDPoint := FALSE;
+					countEnded := TRUE;
+					IF currentZeroRow > maxZeroRow THEN
+						maxZeroRow := currentZeroRow;
+						maxZeroStart := currentZeroStart
+					END
+				END
+			END;
+			INC(i)
+		END;
+		IF ~countEnded THEN
+			IF currentZeroRow > maxZeroRow THEN
+				maxZeroRow := currentZeroRow;
+				maxZeroStart := currentZeroStart
+			END
+		END;
+		IF maxZeroRow # 0 THEN
+			IF maxZeroStart = 0 THEN
+				string[0] := ":";
+				i := 1;
+				WHILE ((string[i] # 0X) & ~((string[i] # "0") & (string[i] # ":"))) DO
+					INC(i)
+				END;
+				IF string[i] = 0X THEN
+					string := "::"
+				ELSE
+					Strings.Delete(string, 1, i - 2)
+				END
+			ELSE
+				i := maxZeroStart;
+				WHILE ((string[i] = "0") OR (string[i] = ":")) DO
+					INC(i)
+				END;
+				IF string[i] = 0X THEN
+					string[maxZeroStart] := ":";
+					string[maxZeroStart + 1] := 0X
+				ELSE
+					Strings.Delete(string, maxZeroStart, i - maxZeroStart - 1)
+				END
+			END
+		END;
+		IF adr.data # 0 THEN
+			Strings.IntToStr(adr.data, prefixLenStr);
+			Strings.Append(string, "/");
+			Strings.Append(string, prefixLenStr)
+		END
+		ELSE
+			IF IsNilAdr(adr) THEN
+				string := ""
+			END
+		END
+	END AdrToStr;
+
+    (*    PROCEDURE ArrayToAdr* (IN array : ARRAY OF SHORTCHAR; ofs, protocol : AO.SIGNED32; LSBfirst : BOOLEAN): Adr;
+		VAR
+			adr: Adr;
+			i, swapTemp: AO.SIGNED32;
+
+
+	BEGIN
+		ASSERT((protocol = 4) OR (protocol = 6));
+		IF protocol = IPv4 THEN
+			IF ~(ofs + 4 <= LEN(array)) THEN
+				RETURN NilAdr
+			END;
+			SYSTEM.MOVE(SYSTEM.ADR(array[ofs]), SYSTEM.ADR(adr.ipv4Adr), 4);
+			IF LSBfirst THEN
+				SwapEndian(adr.ipv4Adr)
+			END;
+			adr.usedProtocol := IPv4
+		ELSIF protocol = IPv6 THEN
+			IF ~(ofs + 16 <= LEN(array)) THEN
+				RETURN NilAdr
+			END;
+			SYSTEM.MOVE(SYSTEM.ADR(array[ofs]), SYSTEM.ADR(adr.ipv6Adr), 16);
+			IF LSBfirst THEN
+				FOR i := 0 TO 3 DO
+					SYSTEM.MOVE(SYSTEM.ADR(adr.ipv6Adr[i * 4]), SYSTEM.ADR(swapTemp), 4);
+					SwapEndian(swapTemp);
+					SYSTEM.MOVE(SYSTEM.ADR(swapTemp), SYSTEM.ADR(adr.ipv6Adr[i * 4]), 4)
+				END
+			END;
+			adr.usedProtocol := IPv6
+		ELSE
+			IF DEBUG THEN
+				ASSERT(TRUE)
+			END;
+			RETURN NilAdr
+		END;
+		RETURN adr
+	END ArrayToAdr;
+
+	PROCEDURE AdrToArray* (adr : Adr; VAR array : ARRAY OF SHORTCHAR; ofs : AO.SIGNED32; LSBfirst : BOOLEAN);
+		VAR
+			tempAdr: Adr;
+			i, swapTemp: AO.SIGNED32;
+
+
+	BEGIN
+		tempAdr := adr;
+		CASE adr.usedProtocol OF
+			IPv4 :	  IF ~(ofs + 4 <= LEN(array)) THEN
+			tempAdr := NilAdr
+		END;
+		IF LSBfirst THEN
+			SwapEndian(tempAdr.ipv4Adr)
+		END;
+		SYSTEM.MOVE(SYSTEM.ADR(tempAdr.ipv4Adr), SYSTEM.ADR(array[ofs]), 4)
+		|       IPv6 :	  IF ~(ofs + 16 <= LEN(array)) THEN
+			tempAdr := NilAdr
+		END;
+		IF LSBfirst THEN
+			FOR i := 0 TO 3 DO
+				SYSTEM.MOVE(SYSTEM.ADR(tempAdr.ipv6Adr[i * 4]), SYSTEM.ADR(swapTemp), 4);
+				SwapEndian(swapTemp);
+				SYSTEM.MOVE(SYSTEM.ADR(swapTemp), SYSTEM.ADR(tempAdr.ipv6Adr[i * 4]), 4)
+			END
+		END;
+		SYSTEM.MOVE(SYSTEM.ADR(adr.ipv6Adr), SYSTEM.ADR(array[ofs]), 16)
+		ELSE
+			IF DEBUG THEN
+				ASSERT(TRUE)
+			END
+		END
+	END AdrToArray;
+
+	PROCEDURE SrcAdrFromBuffer* (buffer : Network.Buffer): Adr;
+		VAR
+			i: AO.SIGNED32;
+			adr: Adr;
+
+
+	BEGIN
+		CASE ORD(buffer.data[buffer.l3ofs]) DIV 16 OF
+			IPv4 :	  adr.usedProtocol := IPv4;
+		SYSTEM.MOVE(SYSTEM.ADR(buffer.data[buffer.l3ofs + 12]), SYSTEM.ADR(adr.ipv4Adr), 4);
+		SetIPv6AdrNil(adr);
+		RETURN adr
+		|       IPv6 :	  adr.usedProtocol := IPv6;
+		FOR i := 0 TO 15 DO
+			adr.ipv6Adr[i] := buffer.data[buffer.l3ofs + 8 + i]
+		END;
+		adr.ipv4Adr := NilAdrIPv4
+		ELSE
+			IF DEBUG THEN
+				ASSERT(TRUE)
+			END;
+			RETURN NilAdr
+		END;
+		RETURN NilAdr
+	END SrcAdrFromBuffer;
+
+	PROCEDURE DestAdrFromBuffer* (buffer : Network.Buffer): Adr;
+		VAR adr: Adr; i: AO.SIGNED32;
+	BEGIN
+		CASE ORD(buffer.data[buffer.l3ofs]) DIV 16 OF
+			IPv4 :	  adr.usedProtocol := IPv4;
+		SYSTEM.MOVE(SYSTEM.ADR(buffer.data[buffer.l3ofs + 16]), SYSTEM.ADR(adr.ipv4Adr), 4);
+		SetIPv6AdrNil(adr);
+		RETURN adr
+		|       IPv6 :	  adr.usedProtocol := IPv6;
+		FOR i := 0 TO 15 DO
+			adr.ipv6Adr[i] := buffer.data[buffer.l3ofs + 24 + i]
+		END;
+		adr.ipv4Adr := NilAdrIPv4
+		ELSE
+			IF DEBUG THEN
+				ASSERT(TRUE)
+			END;
+			RETURN NilAdr
+		END;
+		RETURN NilAdr
+	END DestAdrFromBuffer;
+
+	PROCEDURE OutAdr* (adr : Adr);
+		VAR s: ARRAY 64 OF SHORTCHAR;
+	BEGIN
+		AdrToStr(adr, s);
+		Log.String(s)
+	END OutAdr;
+
+	PROCEDURE Enumerate* (handler : InterfaceHandler);
+		VAR item: Interface;
+	BEGIN
+		item := interfaces;
+		WHILE item # NIL DO
+			handler(item);
+			item := item.next
+		END
+	END Enumerate;
+
+	PROCEDURE OutInterface* (interface : Interface);
+	BEGIN
+		interface.OutInterface
+	END OutInterface;
+
+	PROCEDURE MatchPrefix* (adr : Adr; prefix : Adr): BOOLEAN;
+		VAR
+			bytesToCheck: AO.SIGNED32;
+			bitsToCheck: AO.SIGNED32;
+			i: AO.SIGNED32;
+			matches: BOOLEAN;
+			diffSet: SET;
+	BEGIN
+		IF DEBUG THEN
+			ASSERT((IsNilAdr(adr)) OR (adr.usedProtocol = IPv6))
+		END;
+		matches := TRUE;
+		bytesToCheck := prefix.data DIV 8;
+		bitsToCheck := prefix.data MOD 8;
+		FOR i := 0 TO bytesToCheck - 1 DO
+			IF adr.ipv6Adr[i] # prefix.ipv6Adr[i] THEN
+				matches := FALSE
+			END
+		END;
+		IF bitsToCheck # 0 THEN
+			diffSet := {};
+			FOR i := 0 TO 8 - bitsToCheck - 1 DO
+				diffSet := diffSet + {i}
+			END;
+			FOR i := 0 TO bitsToCheck - 1 DO
+				IF (SYSTEM.VAL(SET, adr.ipv6Adr[bytesToCheck]) - diffSet) # (SYSTEM.VAL(SET, prefix.ipv6Adr[bytesToCheck]) - diffSet) THEN
+					matches := FALSE
+				END
+			END
+		END;
+		RETURN matches
+	END MatchPrefix;
+
+	PROCEDURE InterfaceByDstIP* (dest : Adr): Interface;
+		VAR item, gw: Interface;
+	BEGIN
+		CASE dest.usedProtocol OF
+			IPv4 :	  gw := NIL;
+		item := interfaces;
+		LOOP
+			IF item = NIL THEN
+				EXIT
+			END;
+			IF (item.protocol = IPv4) & (~IsNilAdr(item.localAdr)) & (item.dev.Linked() # Network.LinkNotLinked) THEN
+				IF SameSubnetv4(dest.ipv4Adr, item.subnetAdr.ipv4Adr, item.maskAdr.ipv4Adr) THEN
+					EXIT
+				ELSIF (gw = NIL) & (~IsNilAdr(item.subnetAdr)) THEN
+					IF item.protocol # IPv4 THEN
+						gw := item
+					ELSIF ~IsNilAdr(item.gatewayAdr) THEN
+						gw := item
+					END
+				END
+			END;
+			item := item.next
+		END;
+		IF item # NIL THEN
+			RETURN item
+		ELSE
+			RETURN gw
+		END
+		|       IPv6 :	  RETURN v6InterfaceByDstIP(dest)
+		ELSE
+			IF DEBUG THEN
+				ASSERT(TRUE)
+			END;
+			RETURN NIL
+		END
+	END InterfaceByDstIP;
+
+	PROCEDURE InterfaceByName* (IN name : ARRAY OF SHORTCHAR): Interface;
+		VAR item: Interface;
+	BEGIN
+		item := interfaces;
+		WHILE (item # NIL) & (item.name # name) DO
+			item := item.next
+		END;
+		RETURN item
+	END InterfaceByName;
+
+	PROCEDURE InterfaceByDevice* (dev : Network.LinkDevice): Interface;
+		VAR item, unprefInt: Interface;
+	BEGIN
+		unprefInt := NIL;
+		item := interfaces;
+		WHILE (item # NIL) DO
+			IF item.dev = dev THEN
+				IF item.protocol # preferredProtocol THEN
+					unprefInt := item
+				ELSE
+					RETURN item
+				END
+			END;
+			item := item.next
+		END;
+		RETURN unprefInt
+	END InterfaceByDevice;
+
+	PROCEDURE InterfaceListByDevice* (dev : Network.LinkDevice): InterfaceList;
+		VAR
+			item: Interface; 
+			interfaceList, interfaceListItem: InterfaceList;
+	BEGIN
+		item := interfaces;
+		interfaceList := NIL;
+		WHILE item # NIL DO
+			IF item.dev = dev THEN
+				NEW(interfaceListItem);
+				interfaceListItem.interface := item;
+				interfaceListItem.next := interfaceList;
+				interfaceList := interfaceListItem
+			END;
+			item := item.next
+		END;
+		RETURN interfaceList
+	END InterfaceListByDevice;
+
+	PROCEDURE InstallReceiver* (type : AO.SIGNED32; r : Receiver);
+	BEGIN
+		IF DEBUG THEN
+			ASSERT(r # NIL);
+			ASSERT((type >= 0) & (type <= 255));
+			ASSERT(receivers[type] = NIL)
+		END;
+		receivers[type] := r
+	END InstallReceiver;
+
+	PROCEDURE RemoveReceiver* (type : AO.SIGNED32);
+	BEGIN
+		ASSERT((type >= 0) & (type <= 255));
+		ASSERT(receivers[type] # NIL);
+		receivers[type] := NIL
+	END RemoveReceiver;
+
+	PROCEDURE AddInterface* (int : Interface; VAR res : INTEGER);
+		VAR item: Interface;
+	BEGIN
+		item := interfaces;
+		WHILE item # NIL DO
+			IF item.name = int.name THEN
+				res := DuplicateInterfaceName;
+				RETURN
+			END;
+			item := item.next
+		END;
+		int.next := interfaces;
+		interfaces := int;
+		res := Ok
+	END AddInterface;
+
+	PROCEDURE RemoveInterface* (int : Interface);
+		VAR item: Interface;
+	BEGIN
+		item := interfaces;
+		IF item = NIL THEN
+
+		ELSIF item = int THEN
+			interfaces := interfaces.next
+		ELSE
+			WHILE item.next # int DO
+				item := item.next
+			END;
+			IF item.next # NIL THEN
+				item.next := item.next.next
+			ELSE
+
+			END
+		END
+	END RemoveInterface;
+
+	PROCEDURE PacketOut* (IN title, buffer : ARRAY OF SHORTCHAR; all : BOOLEAN);
+		VAR i, length: AO.SIZE;
+	BEGIN
+		Log.Ln;
+		Log.String("********************");
+		Log.Ln;
+		Log.String(title);
+		Log.Ln;
+		IF all THEN
+			length := LEN(buffer) - 1
+		ELSE
+			length := MIN(LEN(buffer) - 1, 256)
+		END;
+		FOR i := 0 TO length DO
+			IF (i MOD 4) = 0 THEN
+				Log.Ln;
+				Log.Int(i, 2);
+				Log.String(":  ")
+			END;
+			Log.Hex(ORD(buffer[i]), (-1));
+			Log.String(" ")
+		END;
+		Log.Ln;
+		Log.String("********************");
+		Log.Ln
+	END PacketOut; *)
+
+BEGIN
+	IPForwarding := FALSE;
+	EchoReply := TRUE;
+	NilAdr.ipv4Adr := NilAdrIPv4;
+	SetIPv6AdrNil(NilAdr);
+	NilAdr.usedProtocol := NilAdrIdent;
+	FOR counter := 0 TO NbrOfReceivers - 1 DO
+		(*receivers[counter] := NIL*)
+	END;
+	(*interfaces := NIL *)
+END CryptoAosIP.

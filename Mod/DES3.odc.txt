@@ -1,0 +1,169 @@
+MODULE CryptoDES3;
+
+	(** AUTHOR "G.F."; PUROSE "Triple DES Cipher";	 *)
+	(*  based on  POLARSSL des.c *)
+
+	IMPORT Ciphers := CryptoCiphers, U := CryptoUtils, D := CryptoDES, AO := CryptoAosCompat, SYSTEM;
+
+	TYPE
+		Ind4 = EXTENSIBLE RECORD
+			a, b, c, d : AO.SIGNED32
+		END;
+		Cipher* = POINTER TO EXTENSIBLE RECORD(Ciphers.Cipher)
+			ske, skd : ARRAY 96 OF SET;
+			ski : AO.SIGNED32;
+			ivx, ivy : SET
+		END;
+
+	PROCEDURE (SELF: Cipher) InitKey* (IN src : ARRAY OF SHORTCHAR; keybits : AO.SIZE);
+		VAR X, Y: SET; i: AO.SIGNED32;
+	BEGIN
+		ASSERT(keybits = 192);
+		SELF.InitKey^(src, 64);
+		X := U.SetFromBufferBE(src, 0);
+		Y := U.SetFromBufferBE(src, 4);
+		D.ComputeSubkeys(X, Y, SELF.ske, 0);
+		X := U.SetFromBufferBE(src, 8);
+		Y := U.SetFromBufferBE(src, 12);
+		D.ComputeSubkeys(X, Y, SELF.skd, 32);
+		X := U.SetFromBufferBE(src, 16);
+		Y := U.SetFromBufferBE(src, 20);
+		D.ComputeSubkeys(X, Y, SELF.ske, 64);
+		FOR i := 0 TO 30 BY 2 DO
+			SELF.skd[i + 0] := SELF.ske[94 - i];
+			SELF.skd[i + 1] := SELF.ske[95 - i];
+			SELF.ske[i + 32] := SELF.skd[62 - i];
+			SELF.ske[i + 33] := SELF.skd[63 - i];
+			SELF.skd[i + 64] := SELF.ske[30 - i];
+			SELF.skd[i + 65] := SELF.ske[31 - i]
+		END
+	END InitKey;
+
+	PROCEDURE Split (x : SET; VAR i4 : Ind4);
+	BEGIN
+		i4.a := ORD(x) MOD 40H;
+		i4.b := ORD(x) DIV 100H MOD 40H;
+		i4.c := ORD(x) DIV 10000H MOD 40H;
+		i4.d := ORD(x) DIV 1000000H MOD 40H
+	END Split;
+
+	PROCEDURE (SELF: Cipher) SetIV* (IN src : ARRAY OF SHORTCHAR; mode : AO.SIGNED8);
+	BEGIN
+		SELF.SetIV^(src, mode);
+		SELF.ivx := U.SetFromBufferBE(src, 0);
+		SELF.ivy := U.SetFromBufferBE(src, 4)
+	END SetIV;
+
+	PROCEDURE (SELF: Cipher) RoundE* (VAR x, y : SET), NEW;
+		VAR i: Ind4;
+	BEGIN
+		Split(SELF.ske[SELF.ski] / x, i);
+		INC(SELF.ski);
+		y := y / D.sb8[i.a] / D.sb6[i.b] / D.sb4[i.c] / D.sb2[i.d];
+		Split(SELF.ske[SELF.ski] / SYSTEM.ROT(x, (-4)), i);
+		INC(SELF.ski);
+		y := y / D.sb7[i.a] / D.sb5[i.b] / D.sb3[i.c] / D.sb1[i.d]
+	END RoundE;
+
+	PROCEDURE (SELF: Cipher) RoundD* (VAR x, y : SET), NEW;
+		VAR i: Ind4;
+	BEGIN
+		Split(SELF.skd[SELF.ski] / x, i);
+		INC(SELF.ski);
+		y := y / D.sb8[i.a] / D.sb6[i.b] / D.sb4[i.c] / D.sb2[i.d];
+		Split(SELF.skd[SELF.ski] / SYSTEM.ROT(x, (-4)), i);
+		INC(SELF.ski);
+		y := y / D.sb7[i.a] / D.sb5[i.b] / D.sb3[i.c] / D.sb1[i.d]
+	END RoundD;
+
+	PROCEDURE (SELF: Cipher) Encrypt* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+		VAR i: AO.SIZE; r: INTEGER; X, Y: SET;
+	BEGIN
+		ASSERT(SELF.isKeyInitialized & (SELF.mode IN {Ciphers.ECB, Ciphers.CBC}));
+		ASSERT(len MOD SELF.blockSize = 0);
+		i := 0;
+		WHILE i < len DO
+			X := U.SetFromBufferBE(buf, ofs + i);
+			Y := U.SetFromBufferBE(buf, ofs + i + 4);
+			IF SELF.mode = Ciphers.CBC THEN
+				X := X / SELF.ivx;
+				Y := Y / SELF.ivy
+			END;
+			D.IP(X, Y);
+			SELF.ski := 0;
+			FOR r := 0 TO 7 DO
+				SELF.RoundE(Y, X);
+				SELF.RoundE(X, Y)
+			END;
+			FOR r := 0 TO 7 DO
+				SELF.RoundE(X, Y);
+				SELF.RoundE(Y, X)
+			END;
+			FOR r := 0 TO 7 DO
+				SELF.RoundE(Y, X);
+				SELF.RoundE(X, Y)
+			END;
+			D.FP(Y, X);
+			U.SetToBufferBE(Y, buf, ofs + i);
+			U.SetToBufferBE(X, buf, ofs + i + 4);
+			IF SELF.mode = Ciphers.CBC THEN
+				SELF.ivx := Y;
+				SELF.ivy := X
+			END;
+			INC(i, SELF.blockSize)
+		END
+	END Encrypt;
+
+	PROCEDURE (SELF: Cipher) Decrypt* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+		VAR i: AO.SIZE; r: INTEGER; X, Y, X0, Y0: SET;
+	BEGIN
+		ASSERT(SELF.isKeyInitialized);
+		ASSERT(len MOD SELF.blockSize = 0);
+		i := 0;
+		WHILE i < len DO
+			X := U.SetFromBufferBE(buf, ofs + i);
+			Y := U.SetFromBufferBE(buf, ofs + i + 4);
+			IF SELF.mode = Ciphers.CBC THEN
+				X0 := X;
+				Y0 := Y
+			END;
+			D.IP(X, Y);
+			SELF.ski := 0;
+			FOR r := 0 TO 7 DO
+				SELF.RoundD(Y, X);
+				SELF.RoundD(X, Y)
+			END;
+			FOR r := 0 TO 7 DO
+				SELF.RoundD(X, Y);
+				SELF.RoundD(Y, X)
+			END;
+			FOR r := 0 TO 7 DO
+				SELF.RoundD(Y, X);
+				SELF.RoundD(X, Y)
+			END;
+			D.FP(Y, X);
+			IF SELF.mode = Ciphers.CBC THEN
+				Y := Y / SELF.ivx;
+				X := X / SELF.ivy;
+				SELF.ivx := X0;
+				SELF.ivy := Y0
+			END;
+			U.SetToBufferBE(Y, buf, ofs + i);
+			U.SetToBufferBE(X, buf, ofs + i + 4);
+			INC(i, SELF.blockSize)
+		END
+	END Decrypt;
+
+	PROCEDURE (SELF: Cipher) Init* ;
+	BEGIN
+		SELF.SetNameAndBlocksize("3des", 8)
+	END Init;
+
+	PROCEDURE NewCipher* (): Ciphers.Cipher;
+		VAR cipher: Cipher;
+	BEGIN
+		NEW(cipher);cipher.Init();
+		RETURN cipher
+	END NewCipher;
+
+END CryptoDES3.

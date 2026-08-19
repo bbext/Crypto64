@@ -1,0 +1,455 @@
+MODULE CryptoUtils;(** AUTHOR "GF"; PURPOSE ""; *)
+
+	IMPORT S := SYSTEM, Log := (*CONV FROM KernelLog*)
+StdLog, Random := CryptoAosRandom, Kernel, B := CryptoAosBigNumbers, AO := CryptoAosCompat;
+
+	TYPE
+		InitBuffer* = POINTER TO EXTENSIBLE RECORD
+			buf : POINTER TO ARRAY OF SHORTCHAR;
+			in, out : AO.SIZE
+		END;
+
+	VAR
+		hexd: ARRAY 17 OF SHORTCHAR;
+
+	PROCEDURE (*WARN CONV NOT SUPPORTED: &*)
+(SELF: InitBuffer) Init* (size : AO.SIZE), NEW;
+
+	BEGIN
+		NEW(SELF.buf, size);
+		SELF.in := 0;
+		SELF.out := 0
+	END Init;
+
+	PROCEDURE (SELF: InitBuffer) Add* (IN x : ARRAY OF SHORTCHAR), NEW;
+		VAR
+			i: AO.SIZE;
+			c: SHORTCHAR;
+
+
+	BEGIN
+		c := x[0];
+		i := 1;
+		WHILE c # 0X DO
+			SELF.buf[SELF.in] := c;
+			INC(SELF.in);
+			c := x[i];
+			INC(i)
+		END;
+		SELF.buf[SELF.in] := ' ';
+		INC(SELF.in);
+		SELF.buf[SELF.in] := 0X
+	END Add;
+
+	PROCEDURE (SELF: InitBuffer) GetInt* (): AO.SIGNED32, NEW;
+		VAR
+			x: AO.SIGNED32;
+			c: SHORTCHAR;
+
+
+	BEGIN
+		WHILE (SELF.buf[SELF.out] <= ' ') & (SELF.buf[SELF.out] # 0X) DO
+			INC(SELF.out)
+		END;
+		c := SELF.buf[SELF.out];
+		INC(SELF.out);
+		x := 0;
+		REPEAT
+			IF (c >= '0') & (c <= '9') THEN
+				x := 16 * x + (ORD(c) - ORD('0'))
+			ELSIF (c >= 'A') & (c <= 'F') THEN
+				x := 16 * x + (ORD(c) - ORD('A') + 10)
+			ELSIF (c >= 'a') & (c <= 'f') THEN
+				x := 16 * x + (ORD(c) - ORD('a') + 10)
+			ELSE
+				HALT(100)
+			END;
+			c := SELF.buf[SELF.out];
+			INC(SELF.out)
+		UNTIL c <= ' ';
+		RETURN x
+	END GetInt;
+
+	PROCEDURE (SELF: InitBuffer) GetSet* (): SET, NEW;
+
+	BEGIN
+		RETURN BITS(SELF.GetInt())
+	END GetSet;
+
+	PROCEDURE PrintHex* (IN buf : ARRAY OF SHORTCHAR; p, n : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		FOR i := 0 TO n - 1 DO
+			IF i MOD 4 = 0 THEN
+				IF i MOD 24 = 0 THEN
+					Log.Ln
+				END;
+				Log.String("   ")
+			END;
+			AO.LogHex(ORD(buf[p + i]), (-2))
+		END
+	END PrintHex;
+
+
+	PROCEDURE GetLength* (IN buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; VAR len : AO.SIZE);
+
+	BEGIN
+		len := ASH(LONG(ORD(buf[pos])), 24) + ASH(LONG(ORD(buf[pos + 1])), 16) + ASH(LONG(ORD(buf[pos + 2])), 8) + ORD(buf[pos + 3]);
+		INC(pos, 4)
+	END GetLength;
+
+	PROCEDURE PrintBufferString* (IN buf : ARRAY OF SHORTCHAR; pos : AO.SIGNED32);
+		VAR
+			i, p: AO.SIZE;
+			len: AO.SIZE;
+
+
+	BEGIN
+		p := pos;
+		GetLength(buf, p, len);
+		FOR i := 0 TO len - 1 DO
+			Log.Char(buf[p + i])
+		END
+	END PrintBufferString;
+
+	PROCEDURE PutLength* (VAR buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; len : AO.SIZE);
+
+	BEGIN
+		buf[pos] := (*WARN CONV CAST*)SHORT(CHR(len DIV 1000000H MOD 256));
+		buf[pos + 1] := (*WARN CONV CAST*)SHORT(CHR(len DIV 10000H MOD 256));
+		buf[pos + 2] := (*WARN CONV CAST*)SHORT(CHR(len DIV 100H MOD 256));
+		buf[pos + 3] := (*WARN CONV CAST*)SHORT(CHR(len MOD 256));
+		INC(pos, 4)
+	END PutLength;
+
+
+	PROCEDURE GetInt* (IN buf : ARRAY OF SHORTCHAR; pos : AO.SIZE): AO.SIGNED32;
+
+	BEGIN
+		RETURN ASH(LONG(ORD(buf[pos])), 24) + ASH(LONG(ORD(buf[pos + 1])), 16) + ASH(LONG(ORD(buf[pos + 2])), 8) + ORD(buf[pos + 3])
+	END GetInt;
+
+	PROCEDURE PutChar* (VAR buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; ch : SHORTCHAR);
+
+	BEGIN
+		buf[pos] := ch;
+		INC(pos)
+	END PutChar;
+
+	PROCEDURE GetChar* (IN buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; VAR ch : SHORTCHAR);
+
+	BEGIN
+		ch := buf[pos];
+		INC(pos)
+	END GetChar;
+
+	PROCEDURE PutString* (VAR buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; IN str : ARRAY OF SHORTCHAR);
+		VAR
+			i, len: AO.SIGNED32;
+
+
+	BEGIN
+		len := 0;
+		WHILE (len < LEN(str)) & (str[len] # 0X) DO
+			INC(len)
+		END;
+		PutLength(buf, pos, len);
+		FOR i := 0 TO len - 1 DO
+			buf[pos] := str[i];
+			INC(pos)
+		END
+	END PutString;
+
+	PROCEDURE GetString* (IN buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; VAR str : ARRAY OF SHORTCHAR);
+		VAR
+			i, len: AO.SIZE;
+
+
+	BEGIN
+		GetLength(buf, pos, len);
+		FOR i := 0 TO len - 1 DO
+			str[i] := buf[pos];
+			INC(pos)
+		END;
+		str[len] := 0X
+	END GetString;
+
+	PROCEDURE PutArray* (VAR buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; IN arr : ARRAY OF SHORTCHAR; apos, len : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+
+
+	BEGIN
+		PutLength(buf, pos, len);
+		FOR i := 0 TO len - 1 DO
+			buf[pos] := arr[apos + i];
+			INC(pos)
+		END
+	END PutArray;
+
+	PROCEDURE PutBigNumber* (VAR buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; b : B.BigNumber);
+		VAR
+			i, j: AO.SIZE;
+			len: AO.SIGNED32;
+			x: AO.UNSIGNED32;
+			tmp: ARRAY 2048 OF SHORTCHAR;
+
+
+	BEGIN
+		len := 0;
+		FOR i := b.len - 1 TO 0 BY (-1) DO
+			x := b.d[i];
+			tmp[len] := (*WARN CONV CAST*)SHORT(CHR(AO.TOSIGNED32( AO.UMod32(AO.UASH32(x, (-24)), AO.TOUNSIGNED32(100H)))));
+			tmp[len + 1] := (*WARN CONV CAST*)SHORT(CHR((AO.TOSIGNED32(AO.UMod32(AO.UASH32(x, (-16)), AO.TOUNSIGNED32(100H))))));
+			tmp[len + 2] := (*WARN CONV CAST*)SHORT(CHR((AO.TOSIGNED32(AO.UMod32(AO.UASH32(x, (-8)), AO.TOUNSIGNED32(100H))))));
+			tmp[len + 3] := (*WARN CONV CAST*)SHORT(CHR((AO.TOSIGNED32(AO.UMod32(x, AO.TOUNSIGNED32(100H))))));
+			INC(len, 4)
+		END;
+		j := 0;
+		WHILE tmp[j] = 0X DO
+			INC(j);
+			DEC(len)
+		END;
+		IF ORD(tmp[j]) >= 128 THEN
+			PutLength(buf, pos, len + 1);
+			buf[pos] := 0X;
+			INC(pos)
+		ELSE
+			PutLength(buf, pos, len)
+		END;
+		FOR i := 0 TO len - 1 DO
+			buf[pos] := tmp[j + i];
+			INC(pos)
+		END
+	END PutBigNumber;
+
+	PROCEDURE GetBigNumber* (IN buf : ARRAY OF SHORTCHAR; VAR pos : AO.SIZE; VAR b : B.BigNumber);
+		VAR
+			len: AO.SIZE;
+
+
+	BEGIN
+		GetLength(buf, pos, len);
+		B.AssignBin(b, buf, pos, len);
+		INC(pos, len)
+	END GetBigNumber;
+
+	PROCEDURE Hex2Bin* (IN hex : ARRAY OF SHORTCHAR; hp : AO.SIZE; VAR bin : ARRAY OF SHORTCHAR; bp : AO.SIZE; len : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+			h, b: INTEGER;
+			c: SHORTCHAR;
+
+
+	BEGIN
+		i := 0;
+		WHILE i < 2 * len DO
+			c := hex[hp + i];
+			IF (c >= '0') & (c <= '9') THEN
+				h := ORD(c) - ORD('0')
+			ELSIF (c >= 'a') & (c <= 'f') THEN
+				h := ORD(c) - ORD('a') + 10
+			ELSIF (c >= 'A') & (c <= 'F') THEN
+				h := ORD(c) - ORD('A') + 10
+			ELSIF c = 0X THEN
+				Log.String("### error: hex source too short");
+				Log.Ln;
+				HALT(99)
+			ELSE
+				Log.String("### format error in hex string");
+				Log.Ln;
+				HALT(99)
+			END;
+			IF ODD(i) THEN
+				bin[bp] := (*WARN CONV CAST*)SHORT(CHR(b + h));
+				INC(bp)
+			ELSE
+				b := h * 16
+			END;
+			INC(i)
+		END
+	END Hex2Bin;
+
+	PROCEDURE Bin2Hex* (IN bin : ARRAY OF SHORTCHAR; bpos : AO.SIZE; VAR hex : ARRAY OF SHORTCHAR; hpos : AO.SIZE; len : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+			c: INTEGER;
+
+
+	BEGIN
+		FOR i := 0 TO len - 1 DO
+			c := ORD(bin[bpos + i]);
+			hex[hpos] := hexd[c DIV 16];
+			INC(hpos);
+			hex[hpos] := hexd[c MOD 16];
+			INC(hpos)
+		END
+	END Bin2Hex;
+
+	PROCEDURE RandomBytes* (VAR buf : ARRAY OF SHORTCHAR; ofs, len : AO.SIZE);
+		VAR
+			i: AO.SIZE;
+			rg: Random.Generator;
+
+
+	BEGIN
+		NEW(rg);
+		rg.InitSeed(SHORT(Kernel.Time()));
+		FOR i := 0 TO len - 1 DO
+			buf[ofs + i] := (*WARN CONV CAST*)SHORT(CHR(ENTIER(rg.Uniform() * 256)))
+		END
+	END RandomBytes;
+
+	PROCEDURE XORBlock* (VAR block1, block2 : ARRAY OF AO.UNSIGNED8);
+		VAR
+			a1, a2: AO.ADDRESS;
+			s1, s2: SET;
+			i: AO.SIZE;
+
+
+	BEGIN
+		a1 := S.ADR(block1);
+		a2 := S.ADR(block2);
+		FOR i := 1 TO LEN(block1) DIV 4 DO
+			S.GET(a1, s1);
+			S.GET(a2, s2);
+			S.PUT(a1, s1 / s2);
+			INC(a1, 4);
+			INC(a2, 4)
+		END
+	END XORBlock;
+
+	PROCEDURE BufferToBlockBE* (IN buf : ARRAY OF SHORTCHAR; pos : AO.SIZE; VAR block : ARRAY OF AO.UNSIGNED8);
+		VAR
+			i: AO.SIZE;
+			a: AO.ADDRESS;
+
+
+	BEGIN
+		a := S.ADR(block);
+		FOR i := 1 TO LEN(block) DIV 4 DO
+			S.PUT(a, ASH(LONG(ORD(buf[pos + 0])), 24) + ASH(LONG(ORD(buf[pos + 1])), 16) + ASH(LONG(ORD(buf[pos + 2])), 8) + ORD(buf[pos + 3]));
+			INC(a, 4);
+			INC(pos, 4)
+		END
+	END BufferToBlockBE;
+
+	PROCEDURE BufferToBlockLE* (IN buf : ARRAY OF SHORTCHAR; pos : AO.SIZE; VAR block : ARRAY OF AO.UNSIGNED8);
+		VAR
+			i: AO.SIZE;
+			a: AO.ADDRESS;
+
+
+	BEGIN
+		a := S.ADR(block);
+		FOR i := 1 TO LEN(block) DIV 4 DO
+			S.PUT(a, ASH(LONG(ORD(buf[pos + 3])), 24) + ASH(LONG(ORD(buf[pos + 2])), 16) + ASH(LONG(ORD(buf[pos + 1])), 8) + ORD(buf[pos]));
+			INC(a, 4);
+			INC(pos, 4)
+		END
+	END BufferToBlockLE;
+
+	PROCEDURE BlockToBufferBE* (IN block : ARRAY OF AO.UNSIGNED8; VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+		VAR
+			a: AO.ADDRESS;
+			i: AO.SIZE;
+			w: AO.SIGNED32;
+
+
+	BEGIN
+		a := S.ADR(block);
+		FOR i := 1 TO LEN(block) DIV 4 DO
+			S.GET(a, w);
+			INC(a, 4);
+			buf[pos + 0] := (*WARN CONV CAST*)SHORT(CHR(w DIV 1000000H MOD 100H));
+			buf[pos + 1] := (*WARN CONV CAST*)SHORT(CHR(w DIV 10000H MOD 100H));
+			buf[pos + 2] := (*WARN CONV CAST*)SHORT(CHR(w DIV 100H MOD 100H));
+			buf[pos + 3] := (*WARN CONV CAST*)SHORT(CHR(w MOD 100H));
+			INC(pos, 4)
+		END
+	END BlockToBufferBE;
+
+	PROCEDURE BlockToBufferLE* (IN block : ARRAY OF AO.UNSIGNED8; VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+		VAR
+			a: AO.ADDRESS;
+			i: AO.SIZE;
+			w: AO.SIGNED32;
+
+
+	BEGIN
+		a := S.ADR(block);
+		FOR i := 1 TO LEN(block) DIV 4 DO
+			S.GET(a, w);
+			INC(a, 4);
+			buf[pos + 0] := (*WARN CONV CAST*)SHORT(CHR(w MOD 100H));
+			buf[pos + 1] := (*WARN CONV CAST*)SHORT(CHR(w DIV 100H MOD 100H));
+			buf[pos + 2] := (*WARN CONV CAST*)SHORT(CHR(w DIV 10000H MOD 100H));
+			buf[pos + 3] := (*WARN CONV CAST*)SHORT(CHR(w DIV 1000000H MOD 100H));
+			INC(pos, 4)
+		END
+	END BlockToBufferLE;
+
+	PROCEDURE IntToBufferBE* (val : AO.SIGNED32; VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+
+	BEGIN
+		buf[pos + 0] := (*WARN CONV CAST*)SHORT(CHR(val DIV 1000000H MOD 100H));
+		buf[pos + 1] := (*WARN CONV CAST*)SHORT(CHR(val DIV 10000H MOD 100H));
+		buf[pos + 2] := (*WARN CONV CAST*)SHORT(CHR(val DIV 100H MOD 100H));
+		buf[pos + 3] := (*WARN CONV CAST*)SHORT(CHR(val MOD 100H))
+	END IntToBufferBE;
+
+	PROCEDURE SetToBufferBE* (val : SET; VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+
+	BEGIN
+		IntToBufferBE(ORD(val), buf, pos)
+	END SetToBufferBE;
+
+
+	PROCEDURE IntToBufferLE* (val : AO.SIGNED32; VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+
+	BEGIN
+		buf[pos + 0] := (*WARN CONV CAST*)SHORT(CHR(val MOD 100H));
+		buf[pos + 1] := (*WARN CONV CAST*)SHORT(CHR(val DIV 100H MOD 100H));
+		buf[pos + 2] := (*WARN CONV CAST*)SHORT(CHR(val DIV 10000H MOD 100H));
+		buf[pos + 3] := (*WARN CONV CAST*)SHORT(CHR(val DIV 1000000H MOD 100H))
+	END IntToBufferLE;
+
+	PROCEDURE SetToBufferLE* (val : SET; VAR buf : ARRAY OF SHORTCHAR; pos : AO.SIZE);
+
+	BEGIN
+		IntToBufferLE(ORD(val), buf, pos)
+	END SetToBufferLE;
+
+
+	PROCEDURE IntFromBufferBE* (IN buf : ARRAY OF SHORTCHAR; pos : AO.SIZE): AO.SIGNED32;
+
+	BEGIN
+		RETURN ASH(LONG(ORD(buf[pos + 0])), 24) + ASH(LONG(ORD(buf[pos + 1])), 16) + ASH(LONG(ORD(buf[pos + 2])), 8) + ORD(buf[pos + 3])
+	END IntFromBufferBE;
+
+	PROCEDURE SetFromBufferBE* (IN buf : ARRAY OF SHORTCHAR; pos : AO.SIZE): SET;
+
+	BEGIN
+		RETURN BITS(IntFromBufferBE(buf, pos))
+	END SetFromBufferBE;
+
+
+
+	PROCEDURE IntFromBufferLE* (IN buf : ARRAY OF SHORTCHAR; pos : AO.SIZE): AO.SIGNED32;
+
+	BEGIN
+		RETURN ASH(LONG(ORD(buf[pos + 3])), 24) + ASH(LONG(ORD(buf[pos + 2])), 16) + ASH(LONG(ORD(buf[pos + 1])), 8) + ORD(buf[pos])
+	END IntFromBufferLE;
+
+	PROCEDURE SetFromBufferLE* (IN buf : ARRAY OF SHORTCHAR; pos : AO.SIZE): SET;
+
+	BEGIN
+		RETURN BITS(IntFromBufferLE(buf, pos))
+	END SetFromBufferLE;
+
+BEGIN
+	hexd := "0123456789ABCDEF"
+END CryptoUtils.
