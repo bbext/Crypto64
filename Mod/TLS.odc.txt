@@ -2025,6 +2025,7 @@ MODULE CryptoTLS;(** AUTHOR "F.N."; PURPOSE "RFC 2246: Transport Layer Security 
 				ASSERT(data[36 + ofs+1] = 01X);(*RSA*)
 				
 				sigLen := 256 * ORD(data[36 + ofs+2]) + ORD(data[36 + ofs+3]);
+				ASSERT(sigLen <= 512);	(* 64-бит: удалённый bounds-check — иначе запись за пределы signature[] от вредоносного сервера *)
 
 
 				FOR pos := 0 TO sigLen - 1 DO
